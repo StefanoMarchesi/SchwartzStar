@@ -57,6 +57,8 @@ The probe measures evaluated and generated tokens, first visible text, Metal I/O
 
 In a separate retrieval check, IQ2 recovered all three records in an 8,000-token prompt with Q4_0 keys. Prefill was 67.75 tok/s and peak process footprint was 3,137 MiB. [Retrieval setup and output](results/schwartzstar.md#8000-token-retrieval-probe)
 
+On the first three tasks from HumanEval+, Inkling IQ2 passed 2/3 with an explicit assistant text prefix. Gemma passed 3/3. This smoke test uses the official EvalPlus tests for those tasks. [Task-level results and reproduction](results/humaneval-smoke.md)
+
 ## How it works
 
 - Inkling’s twelve central layers run three times. The 24 physical layers yield 48 applications, each with its own state. `adishik`’s shared expert cache work lets repeated applications reuse the same cached weights. [Thinking Machines Lab](https://thinkingmachines.ai/news/inkling-2-mini/) · [Upstream model support](https://github.com/ggml-org/llama.cpp/pull/32694) · [Expert cache deduplication](https://github.com/ggml-org/llama.cpp/issues/32744)
