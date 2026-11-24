@@ -44,3 +44,15 @@ python3 tools/swebench_lite_probe.py "$case_dir/inkling-run" \
 ```
 
 The probe checks the frozen source and test patch before copying the checkout. It verifies the baseline, limits edits to the target method, and evaluates both attempts in the same isolated copy. Use `--baseline-only` to verify the scorer independently of a model.
+
+## Input depth with surrounding Flask source
+
+This follow-up used only IQ2 SSD and the 32-token reasoning budget selected in the [pilot sweep](humaneval-smoke.md#reasoning-budget-sweep). It prepended source from the same Flask checkout before the target and asked for a one-attempt edit of numbered lines. Microbatch remained 512 and the expert cache 3,072 MiB. Keys used Q4_0 and values F16 for all three runs.
+
+| Configured context | Evaluated input | Prefill | First text | Wall time | Peak RSS | Peak physical footprint | Outcome |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 4,096 | 2,968 | 73.36 tok/s | 43.93 s | 90.01 s | 4,584 MiB | 3,758 MiB | Edit rejected |
+| 8,192 | 6,168 | 71.76 tok/s | 89.32 s | 136.42 s | 4,661 MiB | 3,900 MiB | Edit rejected |
+| 16,384 | 11,968 | 65.62 tok/s | 185.92 s | 233.64 s | 4,803 MiB | 4,210 MiB | Edit rejected |
+
+The model returned the same 229-token proposal in each trial. It tried to replace the entire method, and the bounded replacement string ended inside a docstring. The controller rejected it before running tests. These runs show successful ingestion and the cost of a fresh longer prompt. The edit controller and prompt protocol prevented an end-to-end repair in all three configurations.
