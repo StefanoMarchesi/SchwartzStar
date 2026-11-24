@@ -54,3 +54,15 @@ The three disclosed tasks were also run through EvalPlus 0.3.1's OpenAI-compatib
 | Inkling IQ2, reasoning on, minimal effort, 128-token budget | 3/3 | 3/3 | 28.29 s |
 
 The zero-budget configuration repeatedly opened and closed an empty thinking block and reached the 768-token cap for all three tasks. With reasoning on, the model produced visible code and stopped after 379, 437, and 263 generated tokens. This pilot uses the same official tasks as the completion experiment above, with a different prompt protocol and Inkling runtime profile. [EvalPlus generation protocol](https://github.com/evalplus/evalplus/blob/master/docs/cli.md)
+
+## Reasoning-budget sweep
+
+The same three tasks were then issued with the same official instruct prompt, greedy decoder, and 768-token output cap. One resident IQ2 server at 8,192 configured positions handled all nine requests. The requests used streaming so the first visible text could be timed. Prefix caching was disabled, and the order of budgets was rotated between tasks. EvalPlus sanitized and evaluated the returned code.
+
+| Thinking budget | HumanEval+ tests passed | Median time to first visible text | Median request time |
+| ---: | ---: | ---: | ---: |
+| 32 | 3/3 | 4.86 s | 19.51 s |
+| 128 | 3/3 | 11.38 s | 28.01 s |
+| 256 | 3/3 | 19.35 s | 30.65 s |
+
+The 32-token profile passes the same three tasks with the lowest latency in this sweep. The results are confined to this sample. The configured capacity was 8,192 tokens and the three prompt lengths were under 200 tokens. Populating longer contexts is a separate test.

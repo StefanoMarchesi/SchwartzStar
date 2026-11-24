@@ -12,3 +12,35 @@ The controller supplied the original method and applied only the returned replac
 Both first attempts added a working binary option under a different name than the `text` keyword used by the official tests. The initial reformulation asked for a compatible option and left its name open. After receiving the failure, Inkling changed the method to use one `text: bool = True` parameter. Gemma kept its `binary` parameter and added a second `text` option. Both passed the tests. The smaller public interface in Inkling’s patch is closer to the single option requested and the interface Flask ultimately shipped.
 
 The controller provided the edit location and ran pytest on macOS. This is a one-case guided patch experiment with the official test data, outside the full SWE-bench evaluation harness.
+
+## Reproduce on Apple Silicon
+
+Use Python 3.11 or later for the TOML test. From the SchwartzStar checkout, prepare the pinned Flask source and a scoring environment. Install `datasets` in the Python environment used to extract the fixture.
+
+```bash
+case_dir=$(mktemp -d)
+git clone --filter=blob:none https://github.com/pallets/flask.git "$case_dir/flask"
+git -C "$case_dir/flask" checkout --detach 4c288bc97ea371817199908d0d9b12de9dae327e
+python3 -m venv "$case_dir/score"
+"$case_dir/score/bin/python" -m pip install \
+  'pytest==7.4.4' 'werkzeug==2.3.7' 'jinja2==3.1.6' 'itsdangerous==2.2.0' click
+python3 - "$case_dir/test.patch" <<'PY'
+from pathlib import Path
+import sys
+from datasets import load_dataset
+
+rows = load_dataset("SWE-bench/SWE-bench_Lite", split="test")
+case = next(row for row in rows if row["instance_id"] == "pallets__flask-4992")
+Path(sys.argv[1]).write_text(case["test_patch"], encoding="utf-8")
+PY
+```
+
+Start `./serve.sh coding` and run the probe with `--prefill-json`. For Gemma, stop Inkling first, start `INKLING_CTX=8192 INKLING_BATCH=512 ./serve.sh resident "$GEMMA_MODEL"`, give the probe a fresh output directory, and omit `--prefill-json`.
+
+```bash
+python3 tools/swebench_lite_probe.py "$case_dir/inkling-run" \
+  --checkout "$case_dir/flask" --test-patch "$case_dir/test.patch" \
+  --python "$case_dir/score/bin/python" --prefill-json
+```
+
+The probe checks the frozen source and test patch before copying the checkout. It verifies the baseline, limits edits to the target method, and evaluates both attempts in the same isolated copy. Use `--baseline-only` to verify the scorer independently of a model.
