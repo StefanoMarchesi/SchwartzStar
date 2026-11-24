@@ -41,6 +41,28 @@ INKLING_CTX=8192 INKLING_BATCH=256 INKLING_CACHE_MIB=2304 INKLING_CACHE_TYPE_K=q
 
 The probe checks exact recovery on one synthetic prefix. The generated object contained `alder = RV7KQ3`, `birch = J9MD4X`, and `cedar = PT5N8B`.
 
+### Comparison with resident Gemma at 8K and 16K
+
+The same raw Completion probe was run on Gemma 4 12B Instruct Q4_0 at 8,000 and 16,000 evaluated tokens and repeated on IQ2 at 16,000. Both used one slot, four threads, microbatch 256, Q4_0 keys, F16 values, and the same three-code JSON schema. Codes occupy the same relative offsets. Each model tokenizes the repeated filler with its own tokenizer. Inkling stops after 38 generated tokens at both lengths. The original Inkling 8K run had a 96-token cap, with 64 for the other runs.
+
+| Model | Input / context | Exact codes | Prefill | Decode | First text | Peak RSS | Peak physical footprint | Peak swap increase |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Inkling IQ2 SSD | 8,000 / 8,192 | 3/3 | 67.75 tok/s | 4.02 tok/s | 118.09 s | 3,951 MiB | 3,137 MiB | 0 MiB |
+| Gemma Q4_0 resident | 8,000 / 8,192 | 0/3 | 144.33 tok/s | 14.43 tok/s | 55.45 s | 5,709 MiB | 1,208 MiB | 1,338 MiB |
+| Inkling IQ2 SSD | 16,000 / 16,384 | 3/3 | 59.97 tok/s | 4.07 tok/s | 266.83 s | 4,109 MiB | 3,695 MiB | 0 MiB |
+| Gemma Q4_0 resident | 16,000 / 16,384 | 0/3 | 135.31 tok/s | 13.12 tok/s | 118.26 s | 8,024 MiB | 1,502 MiB | 85 MiB |
+
+In the 16K trial, IQ2 recovered all three codes with 49% lower peak RSS. Gemma processed the input and generated text faster. The macOS physical-footprint metric orders the models differently because of how it charges file-backed mappings and private buffers. System swap measures activity across the laptop and starting conditions varied. These results cover a single structured retrieval scenario on raw completion with quantized keys. Chat formatting, the default F16 keys, and long-context code edits need separate evaluation.
+
+```bash
+INKLING_CTX=16384 INKLING_BATCH=256 INKLING_CACHE_MIB=2304 INKLING_CACHE_TYPE_K=q4_0 \
+  python3 check.py run coding "$IQ2" iq2-16k-retrieval --prefix-only 16000 --retrieve --tokens 64 --timeout 600
+INKLING_CTX=16384 INKLING_BATCH=256 INKLING_CACHE_TYPE_K=q4_0 \
+  python3 check.py run resident "$GEMMA_MODEL" gemma-16k-retrieval --prefix-only 16000 --retrieve --tokens 64 --timeout 600
+```
+
+`check.py` saves the JSON result before returning a failure status when any code misses.
+
 ## 128K allocation probe
 
 IQ4_NL, Q4_0 keys and F16 values, microbatch 1, expert cache 256 MiB. The server allocated **131,072** positions and evaluated **32** input tokens. It emitted eight tokens, with first text in **14.76 s**, prefill **2.17 tok/s**, decode **2.28 tok/s**, and all **48/48** routed applications observed. Peak physical footprint was **3,175 MiB**, peak RSS **4,907 MiB**, and swap changed from 2,292.1 to 2,284.1 MiB. The Metal KV buffers allocated 2,624 MiB for the eight global applications and 128.12 MiB for the local window.

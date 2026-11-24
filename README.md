@@ -57,6 +57,8 @@ The probe measures evaluated and generated tokens, first visible text, Metal I/O
 
 In a separate retrieval check, IQ2 recovered all three records in an 8,000-token prompt with Q4_0 keys. Prefill was 67.75 tok/s and peak process footprint was 3,137 MiB. [Retrieval setup and output](results/schwartzstar.md#8000-token-retrieval-probe)
 
+At 16,000 evaluated tokens in the same raw completion test, IQ2 again recovered all three codes and peaked at 4,109 MiB RSS. Resident Gemma returned three incorrect codes and used 8,024 MiB RSS. Gemma began answering in 118 seconds, versus 267 seconds for IQ2. The result covers one constrained retrieval test with Q4_0 keys. [Configuration and memory metrics](results/schwartzstar.md#comparison-with-resident-gemma-at-8k-and-16k)
+
 On the first three tasks from HumanEval+, Inkling IQ2 passed 2/3 with an explicit assistant text prefix. Gemma passed 3/3. This smoke test uses the official EvalPlus tests for those tasks. [Task-level results and reproduction](results/humaneval-smoke.md)
 
 ## How it works
