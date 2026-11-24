@@ -1,0 +1,24 @@
+# llama.cpp sources cloned by build.sh
+.llama.cpp/
+
+# GGUF weights and local model staging
+models
+models/
+*.gguf
+*.lock
+*.gguf.part
+
+# Build output and Python bytecode
+build/
+*.o
+*.a
+__pycache__/
+
+# Keep raw benchmark logs and JSON local
+results/*
+!results/*.md
+
+# macOS / host
+.DS_Store
+.freebuff/
+.cloud-attachments/

@@ -1,0 +1,177 @@
+diff --git a/include/llama.h b/include/llama.h
+index 9cc17a8..7c7b612 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -1131,6 +1131,11 @@ extern "C" {
+     // If set to true, the model will only attend to the past tokens
+     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
+ 
++    // Declares whether the following graph evaluations process prompt tokens (prefill) or generated
++    // tokens (decode). It only feeds the per-phase I/O statistics of the MoE cache, so a one-token
++    // ubatch is counted on the right side; results are unchanged.
++    LLAMA_API void llama_set_io_phase(struct llama_context * ctx, bool prefill);
++
+     // Returns whether the context is currently using causal attention
+     LLAMA_API bool llama_get_causal_attn(const struct llama_context * ctx);
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 1118b91..1640a6e 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3140,7 +3140,7 @@ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor
+     auto * lctx = static_cast<llama_context *>(user_data);
+ 
+     // the slot maps of the MoE cache
+-    if (lctx->moe_cache && lctx->moe_cache->copy(backend, src, dst, graph)) {
++    if (lctx->moe_cache && lctx->moe_cache->copy(backend, src, dst, graph, lctx->io_prefill)) {
+         return true;
+     }
+ 
+@@ -4658,6 +4658,10 @@ void llama_set_embeddings(llama_context * ctx, bool embeddings) {
+     ctx->set_embeddings(embeddings);
+ }
+ 
++void llama_set_io_phase(llama_context * ctx, bool prefill) {
++    ctx->set_io_phase(prefill);
++}
++
+ void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {
+     ctx->set_causal_attn(causal_attn);
+ }
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 3e3921c..f101d69 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -122,6 +122,10 @@ struct llama_context {
+ 
+     void set_embeddings (bool value);
+     void set_embeddings_nextn(bool value, bool masked);
++
++    // prompt processing (prefill) rather than generation, for the per-phase MoE cache statistics
++    void set_io_phase(bool prefill) { io_prefill = prefill; }
++    bool io_prefill = false;
+     void set_embeddings_layer_inp(uint32_t lid, bool enable);
+     void set_embeddings_layer_inp_dev(bool value);
+ 
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index d1c99e9..642201a 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -408,11 +408,16 @@ struct llama_moe_cache::impl {
+     std::vector<read_job> reads;
+     size_t disk_reads = 0;
+     size_t disk_bytes = 0;
+-    // split by the ubatch the read belongs to: 1 token is decode, more tokens are prefill
+-    size_t prefill_reads = 0;
+-    size_t prefill_bytes = 0;
+-    size_t decode_reads  = 0;
+-    size_t decode_bytes  = 0;
++    // split by the declared phase of the request, not by the ubatch size: with a microbatch of 1
++    // a prompt token and a generated token look the same to the cache
++    size_t prefill_reads  = 0;
++    size_t prefill_bytes  = 0;
++    size_t prefill_tokens = 0;
++    size_t prefill_misses = 0;
++    size_t decode_reads   = 0;
++    size_t decode_bytes   = 0;
++    size_t decode_tokens  = 0;
++    size_t decode_misses  = 0;
+     // router lookups per layer application, so a pass that never ran is visible
+     std::vector<size_t> applications;
+ 
+@@ -929,7 +934,7 @@ struct llama_moe_cache::impl {
+         return n;
+     }
+ 
+-    bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph) {
++    bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, bool prefill) {
+         const auto it = layer_of.find(src);
+         if (it == layer_of.end()) {
+             return false;
+@@ -1046,18 +1051,25 @@ struct llama_moe_cache::impl {
+             }
+             disk_reads += reads.size();
+             disk_bytes += bytes;
+-            if (n_tokens == 1) {
+-                decode_reads += reads.size();
+-                decode_bytes += bytes;
+-            } else {
++            if (prefill) {
+                 prefill_reads += reads.size();
+                 prefill_bytes += bytes;
++            } else {
++                decode_reads += reads.size();
++                decode_bytes += bytes;
+             }
+             reads.clear();
+         }
+ 
+         if (stream) {
+             applications[il] += 1;
++            if (prefill) {
++                prefill_tokens += (size_t) n_tokens;
++                prefill_misses += fills.size() + cpu.size();
++            } else {
++                decode_tokens += (size_t) n_tokens;
++                decode_misses += fills.size() + cpu.size();
++            }
+         }
+ 
+         stats & st = ids.size() <= (size_t) 8*n_expert_used ? stats_small : stats_large;
+@@ -1082,8 +1094,10 @@ struct llama_moe_cache::impl {
+                     [](size_t n) { return n > 0; });
+             LLAMA_LOG_INFO("Inkling SSD: reads = %zu, read = %.2f MiB, routed applications = %zu/%zu\n",
+                     disk_reads, disk_bytes/1048576.0, used, applications.size());
+-            LLAMA_LOG_INFO("Inkling SSD I/O: prefill reads = %zu, prefill = %.2f MiB, decode reads = %zu, decode = %.2f MiB\n",
+-                    prefill_reads, prefill_bytes/1048576.0, decode_reads, decode_bytes/1048576.0);
++            LLAMA_LOG_INFO("Inkling SSD I/O: prefill: tokens = %zu, misses = %zu, reads = %zu, read = %.2f MiB\n",
++                    prefill_tokens, prefill_misses, prefill_reads, prefill_bytes/1048576.0);
++            LLAMA_LOG_INFO("Inkling SSD I/O: decode:  tokens = %zu, misses = %zu, reads = %zu, read = %.2f MiB\n",
++                    decode_tokens, decode_misses, decode_reads, decode_bytes/1048576.0);
+             std::string per_layer;
+             for (size_t il = 0; il < applications.size(); ++il) {
+                 per_layer += (il ? " " : "") + std::to_string(applications[il]);
+@@ -1197,8 +1211,8 @@ ggml_tensor * llama_moe_cache::build_experts(const llm_graph_context & g, const
+     return experts;
+ }
+ 
+-bool llama_moe_cache::copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph) {
+-    return pimpl->copy(backend, src, dst, graph);
++bool llama_moe_cache::copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, bool prefill) {
++    return pimpl->copy(backend, src, dst, graph, prefill);
+ }
+ 
+ int64_t llama_moe_cache::copy_experts(ggml_backend_t backend, const ggml_tensor * w, ggml_tensor * dst, int64_t e, int64_t last) {
+diff --git a/src/llama-moe-cache.h b/src/llama-moe-cache.h
+index 833eac3..21a7867 100644
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -54,7 +54,8 @@ public:
+             ggml_tensor * cur, ggml_tensor * selected_experts, llama_moe_cache_build_experts_t build, void * user_data) const;
+ 
+     // ggml_backend_sched copy callback, returns false if src is not a slot map
+-    bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph);
++    // prefill says whether this ubatch processes prompt tokens, for the per-phase I/O statistics
++    bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, bool prefill);
+ 
+     // for large batches: copy the experts of w that are in the cache, starting at expert e and up to expert last, to the copy dst of w
+     // returns the number of experts copied, 0 if expert e is not in the cache
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 932d08b..acbbad1 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -4635,6 +4635,14 @@ private:
+             has_output |= batch.tokens[i].output;
+         }
+ 
++        // declare the phase to llama.cpp: a one-token ubatch can be a prompt token, so the MoE cache
++        // cannot tell prefill from decode by the batch size alone
++        int32_t n_prompt_tokens = 0;
++        for (int i = off; i < off + batch.view.size(); ++i) {
++            n_prompt_tokens += batch.tokens[i].is_prompt ? 1 : 0;
++        }
++        llama_set_io_phase(ctx_tgt, n_prompt_tokens > 0);
++
+         // yield to the queue, so we can still handle metrics tasks while decoding
+         // note: the sync is done here too, so that the wait is also covered by the yield
+         int ret = 0;

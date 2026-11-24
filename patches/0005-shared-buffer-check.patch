@@ -1,0 +1,74 @@
+diff --git a/ggml/include/ggml-metal.h b/ggml/include/ggml-metal.h
+index 433838f..a309e81 100644
+--- a/ggml/include/ggml-metal.h
++++ b/ggml/include/ggml-metal.h
+@@ -44,6 +44,11 @@ GGML_BACKEND_API ggml_backend_t ggml_backend_metal_init(void);
+ 
+ GGML_BACKEND_API bool ggml_backend_is_metal(ggml_backend_t backend);
+ 
++// true when the buffer is a Metal buffer in shared (unified) memory, which the CPU can write directly.
++// The buffer types report is_host = false on Metal even for shared allocations, so a caller that writes
++// through the tensor data pointer must check this instead.
++GGML_BACKEND_API bool ggml_backend_metal_buffer_is_shared(ggml_backend_buffer_t buffer);
++
+ GGML_BACKEND_API void ggml_backend_metal_set_abort_callback(ggml_backend_t backend, ggml_abort_callback abort_callback, void * user_data);
+ 
+ // helper to check if the device supports a specific family
+diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
+index aca83e1..3138c13 100644
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -251,6 +251,11 @@ static bool ggml_backend_buffer_is_metal(ggml_backend_buffer_t buffer) {
+            buffer->iface.free_buffer == ggml_backend_metal_buffer_private_free_buffer;
+ }
+ 
++bool ggml_backend_metal_buffer_is_shared(ggml_backend_buffer_t buffer) {
++    return buffer != nullptr && ggml_backend_buffer_is_metal(buffer) &&
++           ggml_metal_buffer_is_shared((ggml_metal_buffer_t) buffer->context);
++}
++
+ //
+ // buffer types
+ //
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index a660e2f..d1c99e9 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -3,6 +3,10 @@
+ #include "llama-graph.h"
+ #include "llama-expert-io.h"
+ 
++#if defined(__APPLE__) && defined(GGML_USE_METAL)
++#include "ggml-metal.h"
++#endif
++
+ #if defined(__APPLE__)
+ #include <dispatch/dispatch.h>
+ #endif
+@@ -719,6 +723,26 @@ struct llama_moe_cache::impl {
+                 ggml_backend_buffer_clear(d.buf.get(), 0);
+                 d.buf_size = ggml_backend_buffer_get_size(d.buf.get());
+             }
++            if (stream && !no_alloc) {
++                // The stream writes the experts into the banks through the CPU pointer, so the
++                // allocated buffer must really be shared memory and not only a Metal buffer type.
++                size_t n_banks = 0;
++                for (ggml_tensor * t = ggml_get_first_tensor(d.ctx.get()); t != nullptr;
++                        t = ggml_get_next_tensor(d.ctx.get(), t)) {
++#if defined(__APPLE__) && defined(GGML_USE_METAL)
++                    if (!ggml_backend_metal_buffer_is_shared(t->buffer)) {
++                        throw std::runtime_error(format("Inkling SSD: %s is not in a shared Metal buffer, "
++                                "the CPU cannot fill it directly", t->name));
++                    }
++#endif
++                    if (t->data == nullptr) {
++                        throw std::runtime_error(format("Inkling SSD: %s has no CPU-visible address", t->name));
++                    }
++                    n_banks++;
++                }
++                LLAMA_LOG_INFO("%s: Inkling SSD: %zu banks in %s shared memory, CPU-writable\n",
++                        __func__, n_banks, ggml_backend_buft_name(ggml_backend_buffer_get_type(d.buf.get())));
++            }
+         }
+         buf_host = llama_memory_bufs::alloc_buf(ctx_host.get(), buft_host, no_alloc, "MoE cache slot maps");
+         if (!no_alloc) {

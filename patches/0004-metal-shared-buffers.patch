@@ -1,0 +1,29 @@
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index 4266481..a660e2f 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -473,13 +473,20 @@ struct llama_moe_cache::impl {
+             dedup = std::clamp(atoi(v), 0, 2);
+         }
+         if (stream) {
+-            if (devices.size() != 1 || !ggml_backend_buft_is_host(devices.front().buft) || this->cpu_share > 0.0f) {
+-                throw std::runtime_error("Inkling SSD requires a single GPU with shared buffers and no CPU cache misses");
++            // Metal reports every buffer type as device memory, but on Apple Silicon its default
++            // allocation is shared with the CPU, which is what the pread writes into the banks need.
++            const char * buft_name = ggml_backend_buft_name(devices.front().buft);
++            const std::string name = buft_name;
++            const bool host_buft = ggml_backend_buft_is_host(devices.front().buft);
++            const bool metal     = name.find("Metal") != std::string::npos || name.find("MTL") != std::string::npos;
++            if (devices.size() != 1 || (!host_buft && !metal) || this->cpu_share > 0.0f) {
++                throw std::runtime_error(format("Inkling SSD requires a single GPU with shared buffers and no CPU cache "
++                        "misses, got %s", buft_name));
+             }
+             dedup = 1;
+             applications.assign(model.layers.size(), 0);
+-            LLAMA_LOG_INFO("%s: Inkling SSD: %zu unique expert tensors, shared cache, pread/F_NOCACHE\n",
+-                    __func__, stream->weights.size());
++            LLAMA_LOG_INFO("%s: Inkling SSD: %zu unique expert tensors, shared cache on %s, pread/F_NOCACHE\n",
++                    __func__, stream->weights.size(), buft_name);
+         }
+         if (dedup > 0 && this->cpu_share > 0.0f) {
+             // the CPU part writes per-plan zero slots into the slot map, which a shared slot map would carry to the next pass

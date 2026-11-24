@@ -1,0 +1,66 @@
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index 642201a..8f73e01 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -17,6 +17,7 @@
+ #include "ggml-cpp.h"
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -418,6 +419,11 @@ struct llama_moe_cache::impl {
+     size_t decode_bytes   = 0;
+     size_t decode_tokens  = 0;
+     size_t decode_misses  = 0;
++    // wall time on the critical path: the pread block and the wait for the router read-back
++    double prefill_read_ms = 0.0;
++    double prefill_sync_ms = 0.0;
++    double decode_read_ms  = 0.0;
++    double decode_sync_ms  = 0.0;
+     // router lookups per layer application, so a pass that never ran is visible
+     std::vector<size_t> applications;
+ 
+@@ -973,8 +979,14 @@ struct llama_moe_cache::impl {
+         const int64_t n_tokens = sel->src[0]->ne[1];
+ 
+         ids.resize(ggml_nelements(sel));
++        const auto sync_start = std::chrono::steady_clock::now();
+         ggml_backend_tensor_get_async(backend, sel, ids.data(), 0, ggml_nbytes(sel));
+         ggml_backend_synchronize(backend);
++        const double sync_ms = std::chrono::duration<double, std::milli>(
++                std::chrono::steady_clock::now() - sync_start).count();
++        if (stream) {
++            (prefill ? prefill_sync_ms : decode_sync_ms) += sync_ms;
++        }
+ 
+         if (trace != nullptr) {
+             write_trace(il, n_used);
+@@ -1031,6 +1043,7 @@ struct llama_moe_cache::impl {
+         }
+ 
+         if (!reads.empty()) {
++            const auto read_start = std::chrono::steady_clock::now();
+ #if defined(__APPLE__)
+             // Bounded workers, no staging or extra copy on a unified-memory GPU.
+             const size_t workers = std::min<size_t>(4, reads.size());
+@@ -1049,6 +1062,9 @@ struct llama_moe_cache::impl {
+                     GGML_ABORT("Inkling SSD: pread at %zu (%zu bytes): %s", job.offset, job.size, std::strerror(job.error));
+                 }
+             }
++            const double read_ms = std::chrono::duration<double, std::milli>(
++                    std::chrono::steady_clock::now() - read_start).count();
++            (prefill ? prefill_read_ms : decode_read_ms) += read_ms;
+             disk_reads += reads.size();
+             disk_bytes += bytes;
+             if (prefill) {
+@@ -1098,6 +1114,8 @@ struct llama_moe_cache::impl {
+                     prefill_tokens, prefill_misses, prefill_reads, prefill_bytes/1048576.0);
+             LLAMA_LOG_INFO("Inkling SSD I/O: decode:  tokens = %zu, misses = %zu, reads = %zu, read = %.2f MiB\n",
+                     decode_tokens, decode_misses, decode_reads, decode_bytes/1048576.0);
++            LLAMA_LOG_INFO("Inkling SSD time: prefill: read = %.1f ms, sync = %.1f ms; decode: read = %.1f ms, sync = %.1f ms\n",
++                    prefill_read_ms, prefill_sync_ms, decode_read_ms, decode_sync_ms);
+             std::string per_layer;
+             for (size_t il = 0; il < applications.size(); ++il) {
+                 per_layer += (il ? " " : "") + std::to_string(applications[il]);

@@ -1,0 +1,89 @@
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index 9db1c30..4266481 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -17,7 +17,9 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <numeric>
+ #include <stdexcept>
++#include <string>
+ #include <unordered_map>
+ #include <unordered_set>
+ #include <vector>
+@@ -402,7 +404,13 @@ struct llama_moe_cache::impl {
+     std::vector<read_job> reads;
+     size_t disk_reads = 0;
+     size_t disk_bytes = 0;
+-    std::vector<bool> streamed_layers;
++    // split by the ubatch the read belongs to: 1 token is decode, more tokens are prefill
++    size_t prefill_reads = 0;
++    size_t prefill_bytes = 0;
++    size_t decode_reads  = 0;
++    size_t decode_bytes  = 0;
++    // router lookups per layer application, so a pass that never ran is visible
++    std::vector<size_t> applications;
+ 
+     int32_t n_expert_used;
+ 
+@@ -469,7 +477,7 @@ struct llama_moe_cache::impl {
+                 throw std::runtime_error("Inkling SSD requires a single GPU with shared buffers and no CPU cache misses");
+             }
+             dedup = 1;
+-            streamed_layers.resize(model.layers.size());
++            applications.assign(model.layers.size(), 0);
+             LLAMA_LOG_INFO("%s: Inkling SSD: %zu unique expert tensors, shared cache, pread/F_NOCACHE\n",
+                     __func__, stream->weights.size());
+         }
+@@ -925,7 +933,8 @@ struct llama_moe_cache::impl {
+         GGML_ASSERT(ggml_is_contiguous(sel));
+         GGML_ASSERT(sel->op == GGML_OP_RESHAPE); // of the [n_expert_used, n_tokens] ids, see build_lookup
+ 
+-        const int32_t n_used = (int32_t) sel->src[0]->ne[0];
++        const int32_t n_used   = (int32_t) sel->src[0]->ne[0];
++        const int64_t n_tokens = sel->src[0]->ne[1];
+ 
+         ids.resize(ggml_nelements(sel));
+         ggml_backend_tensor_get_async(backend, sel, ids.data(), 0, ggml_nbytes(sel));
+@@ -1006,11 +1015,18 @@ struct llama_moe_cache::impl {
+             }
+             disk_reads += reads.size();
+             disk_bytes += bytes;
++            if (n_tokens == 1) {
++                decode_reads += reads.size();
++                decode_bytes += bytes;
++            } else {
++                prefill_reads += reads.size();
++                prefill_bytes += bytes;
++            }
+             reads.clear();
+         }
+ 
+         if (stream) {
+-            streamed_layers[il] = true;
++            applications[il] += 1;
+         }
+ 
+         stats & st = ids.size() <= (size_t) 8*n_expert_used ? stats_small : stats_large;
+@@ -1031,9 +1047,18 @@ struct llama_moe_cache::impl {
+ 
+     void log_stats() const {
+         if (stream) {
++            const size_t used = (size_t) std::count_if(applications.begin(), applications.end(),
++                    [](size_t n) { return n > 0; });
+             LLAMA_LOG_INFO("Inkling SSD: reads = %zu, read = %.2f MiB, routed applications = %zu/%zu\n",
+-                    disk_reads, disk_bytes/1048576.0,
+-                    (size_t) std::count(streamed_layers.begin(), streamed_layers.end(), true), streamed_layers.size());
++                    disk_reads, disk_bytes/1048576.0, used, applications.size());
++            LLAMA_LOG_INFO("Inkling SSD I/O: prefill reads = %zu, prefill = %.2f MiB, decode reads = %zu, decode = %.2f MiB\n",
++                    prefill_reads, prefill_bytes/1048576.0, decode_reads, decode_bytes/1048576.0);
++            std::string per_layer;
++            for (size_t il = 0; il < applications.size(); ++il) {
++                per_layer += (il ? " " : "") + std::to_string(applications[il]);
++            }
++            LLAMA_LOG_INFO("Inkling SSD applications: lookups = %zu, layers = %zu, per layer = %s\n",
++                    std::accumulate(applications.begin(), applications.end(), size_t{0}), used, per_layer.c_str());
+         }
+         auto log = [](const char * name, const stats & st) {
+             const size_t n = st.hits + st.misses;

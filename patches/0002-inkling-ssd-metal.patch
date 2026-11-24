@@ -1,0 +1,511 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index e99b48c..5997b61 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2748,6 +2748,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             llm_add_n_cpu_ffn_overrides(value, LLM_FFN_EXPS_REGEX, params.tensor_buft_overrides);
+         }
+     ).set_env("LLAMA_ARG_N_CPU_MOE"));
++    add_opt(common_arg(
++        {"--inkling-ssd"},
++        "stream Inkling 2 Mini routed experts from disk into the Metal MoE cache",
++        [](common_params &) {
++#if defined(__APPLE__) && defined(__aarch64__)
++            if (setenv("LLAMA_INKLING_SSD", "1", 1) != 0) {
++                throw std::runtime_error("could not enable Inkling SSD streaming");
++            }
++#else
++            throw std::invalid_argument("Inkling SSD streaming requires Apple Silicon");
++#endif
++        }
++    ));
+     add_opt(common_arg(
+         {"--moe-cache-mib"}, "N",
+         "GPU cache size in MiB for the MoE experts kept in the CPU. with multiple GPUs, it is split among them like the layers (--tensor-split) (default: 0, disabled)",
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 4caca65..1118b91 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -615,6 +615,9 @@ llama_context::llama_context(
+             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
+         }
+ 
++        if (model.expert_stream && cparams.moe_cache_size == 0) {
++            throw std::runtime_error("Inkling SSD requires --moe-cache-mib");
++        }
+         if (cparams.moe_cache_size > 0) {
+             moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share);
+         }
+diff --git a/src/llama-expert-io.h b/src/llama-expert-io.h
+new file mode 100644
+index 0000000..2c052ad
+--- /dev/null
++++ b/src/llama-expert-io.h
+@@ -0,0 +1,92 @@
++#pragma once
++
++#include "ggml.h"
++
++#include <cerrno>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <stdexcept>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#if defined(__APPLE__)
++#include <fcntl.h>
++#include <unistd.h>
++#endif
++
++inline bool llama_expert_stream_enabled() {
++    const char * mode = std::getenv("LLAMA_INKLING_SSD");
++    return mode && std::strcmp(mode, "1") == 0;
++}
++
++class llama_expert_file {
++public:
++    explicit llama_expert_file(int original_fd) {
++#if defined(__APPLE__)
++        fd = fcntl(original_fd, F_DUPFD_CLOEXEC, 0);
++        if (fd < 0) {
++            throw std::runtime_error(std::string("Inkling SSD: dup: ") + std::strerror(errno));
++        }
++        if (fcntl(fd, F_NOCACHE, 1) < 0) {
++            const int err = errno;
++            close(fd);
++            throw std::runtime_error(std::string("Inkling SSD: F_NOCACHE: ") + std::strerror(err));
++        }
++#else
++        (void) original_fd;
++        throw std::runtime_error("Inkling SSD requires macOS/Metal");
++#endif
++    }
++
++    ~llama_expert_file() {
++#if defined(__APPLE__)
++        close(fd);
++#endif
++    }
++
++    llama_expert_file(const llama_expert_file &) = delete;
++    llama_expert_file & operator=(const llama_expert_file &) = delete;
++
++    // Each caller owns a distinct destination. pread does not mutate the shared file offset.
++    int read(uint8_t * dst, size_t size, size_t offset) const {
++#if defined(__APPLE__)
++        while (size > 0) {
++            const ssize_t n = pread(fd, dst, size, static_cast<off_t>(offset));
++            if (n < 0 && errno == EINTR) {
++                continue;
++            }
++            if (n <= 0) {
++                return n == 0 ? EIO : errno;
++            }
++            dst += n;
++            offset += n;
++            size -= n;
++        }
++        return 0;
++#else
++        (void) dst;
++        (void) size;
++        (void) offset;
++        return ENOTSUP;
++#endif
++    }
++
++private:
++#if defined(__APPLE__)
++    int fd = -1;
++#endif
++};
++
++struct llama_expert_stream {
++    struct source {
++        uint32_t file;
++        size_t offset;
++        const void * mapped_data;
++    };
++
++    std::vector<std::unique_ptr<llama_expert_file>> files;
++    std::unordered_map<const ggml_tensor *, source> weights;
++};
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 808fb44..0e9afd7 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1523,8 +1523,11 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
+ 
+             const size_t prefetch_size = prefetch && use_mmap ? -1 : 0;
+ 
+-            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
+-                    lazy.for_file(idx));
++            auto excluded = lazy.for_file(idx);
++            if (const auto it = cold_ranges.find(idx); it != cold_ranges.end()) {
++                excluded.insert(excluded.end(), it->second.begin(), it->second.end());
++            }
++            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa, excluded);
+             mmaps_used.emplace_back(mapping->size(), 0);
+             if (mlock_mmaps) {
+                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
+@@ -1809,6 +1812,13 @@ bool llama_model_loader::load_all_data(
+                 }
+             }
+ 
++            if (const auto it = cold_ranges.find(weight->idx);
++                    it != cold_ranges.end() && std::find(it->second.begin(), it->second.end(),
++                        std::make_pair(weight->offs, weight->offs + n_size)) != it->second.end() &&
++                    (!buf_mmap || cur->data != nullptr)) {
++                throw std::runtime_error(format("Inkling SSD: %s must be file-mapped with --cpu-moe --no-repack", cur->name));
++            }
++
+             if (check_tensors) {
+                 validation_result.emplace_back(std::async(std::launch::async, [cur, data, n_size] {
+                     return std::make_pair(cur, ggml_validate_row_data(cur->type, data, n_size));
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index ed59079..3616e80 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -115,6 +115,7 @@ struct llama_model_loader {
+         std::set<std::string>                  tensors;
+     } lazy;
+ 
++    std::map<uint32_t, llama_mmap::ranges> cold_ranges; // disk-backed experts excluded from mmap prefetch
+     llama_files files;
+     llama_ftype ftype;
+     llama_fver  fver;
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index b204596..9363595 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "llama-arch.h"
+ #include "llama-ext.h"
++#include "llama-expert-io.h"
+ #include "llama-hparams.h"
+ #include "llama-impl.h"
+ #include "llama-mmap.h"
+@@ -2164,8 +2165,40 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+ 
+     load_prec_policy(ml);
+ 
++    std::shared_ptr<llama_expert_stream> stream;
++    if (llama_expert_stream_enabled() && !ml.no_alloc) {
++#if !defined(__APPLE__) || !defined(__aarch64__)
++        throw std::runtime_error("Inkling SSD requires Apple Silicon");
++#endif
++        if (arch != LLM_ARCH_INKLING2_LOOP || !ml.use_mmap || use_mlock || ml.check_tensors || ml.files.empty()) {
++            throw std::runtime_error("Inkling SSD requires a looped Inkling GGUF, mmap, and no mlock or tensor scan");
++        }
++        stream = std::make_shared<llama_expert_stream>();
++        stream->files.resize(ml.files.size());
++        for (const auto & layer : layers) {
++            for (const ggml_tensor * t : { layer.ffn_gate_up_exps, layer.ffn_down_exps }) {
++                if (t == nullptr || stream->weights.count(t)) {
++                    continue;
++                }
++                const auto & weight = ml.require_weight(t->name);
++                const size_t file_size = ml.files.at(weight.idx)->size();
++                const size_t n_bytes = ggml_nbytes(t);
++                if (!ggml_is_contiguous(t) || weight.offs > file_size || n_bytes > file_size - weight.offs) {
++                    throw std::runtime_error(format("Inkling SSD: invalid file range for %s", t->name));
++                }
++                ml.cold_ranges[weight.idx].emplace_back(weight.offs, weight.offs + n_bytes);
++                stream->weights.emplace(t, llama_expert_stream::source{weight.idx, weight.offs, nullptr});
++            }
++        }
++    }
++
+     ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+     pimpl->mappings.reserve(ml.mappings.size());
++    if (stream) {
++        for (auto & [tensor, source] : stream->weights) {
++            source.mapped_data = static_cast<const uint8_t *>(ml.mappings.at(source.file)->addr()) + source.offset;
++        }
++    }
+ 
+     // create the backend buffers
+     // note: the buffers are owned by pimpl->ctxs_bufs, this is a raw-pointer view used to load the data
+@@ -2180,6 +2213,14 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         ggml_backend_buffer_type_t buft = ctx_key.buft;
+         ggml_context * ctx = ctx_ptr.get();
+ 
++        if (stream && buft != ggml_backend_cpu_buffer_type()) {
++            for (auto * t = ggml_get_first_tensor(ctx); t; t = ggml_get_next_tensor(ctx, t)) {
++                if (stream->weights.count(t)) {
++                    throw std::runtime_error(format("Inkling SSD: use --cpu-moe --no-repack for %s", t->name));
++                }
++            }
++        }
++
+         // skip contexts without tensors
+         if (ggml_get_first_tensor(ctx) == nullptr) {
+             continue;
+@@ -2315,6 +2356,19 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         }
+     }
+ 
++    if (stream) {
++        for (const auto & [tensor, source] : stream->weights) {
++            if (tensor->data != source.mapped_data || !ggml_backend_buffer_is_host(tensor->buffer)) {
++                throw std::runtime_error(format("Inkling SSD: %s must be a CPU mmap tensor", tensor->name));
++            }
++            auto & file = stream->files.at(source.file);
++            if (!file) {
++                file = std::make_unique<llama_expert_file>(ml.files.at(source.file)->file_id());
++            }
++        }
++        expert_stream = std::move(stream);
++    }
++
+     if (use_mmap_buffer) {
+         for (auto & mapping : ml.mappings) {
+             pimpl->mappings.emplace_back(std::move(mapping));
+diff --git a/src/llama-model.h b/src/llama-model.h
+index d7285d2..27213f5 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -17,6 +17,7 @@
+ struct llama_cparams;
+ struct llama_ubatch;
+ struct llama_model_loader;
++struct llama_expert_stream;
+ struct llama_model;
+ 
+ // available models
+@@ -834,6 +835,8 @@ struct llama_model {
+ 
+     llama_hadamard hdmd;
+ 
++    std::shared_ptr<const llama_expert_stream> expert_stream;
++
+     // weight -> "<name>.scale" tensor (e.g. NVFP4 scale2), applied by build_lora_mm and build_lora_mm_id
+     std::unordered_map<const ggml_tensor *, ggml_tensor *> w_scales;
+ 
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index 479dc00..9db1c30 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -1,6 +1,11 @@
+ #include "llama-moe-cache.h"
+ 
+ #include "llama-graph.h"
++#include "llama-expert-io.h"
++
++#if defined(__APPLE__)
++#include <dispatch/dispatch.h>
++#endif
+ #include "llama-impl.h"
+ #include "llama-memory.h"
+ #include "llama-model.h"
+@@ -385,6 +390,20 @@ struct llama_moe_cache::impl {
+ 
+     static constexpr int64_t max_batch = 32;
+ 
++    struct read_job {
++        const llama_expert_file * file;
++        uint8_t * dst;
++        size_t size;
++        size_t offset;
++        int error = 0;
++    };
++
++    std::shared_ptr<const llama_expert_stream> stream;
++    std::vector<read_job> reads;
++    size_t disk_reads = 0;
++    size_t disk_bytes = 0;
++    std::vector<bool> streamed_layers;
++
+     int32_t n_expert_used;
+ 
+     stats stats_small; // up to 8 tokens per ubatch
+@@ -423,7 +442,7 @@ struct llama_moe_cache::impl {
+     ggml_context_ptr ctx_views;
+ 
+     impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
+-            n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)) {
++            stream(model.expert_stream), n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)) {
+         for (size_t i = 0; i < backends.size(); ++i) {
+             const auto dev_type = ggml_backend_dev_type(ggml_backend_get_device(backends[i]));
+             if (dev_type == GGML_BACKEND_DEVICE_TYPE_GPU || dev_type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+@@ -445,6 +464,15 @@ struct llama_moe_cache::impl {
+         if (const char * v = getenv("LLAMA_MOE_CACHE_DEDUP"); v != nullptr && *v != '\0') {
+             dedup = std::clamp(atoi(v), 0, 2);
+         }
++        if (stream) {
++            if (devices.size() != 1 || !ggml_backend_buft_is_host(devices.front().buft) || this->cpu_share > 0.0f) {
++                throw std::runtime_error("Inkling SSD requires a single GPU with shared buffers and no CPU cache misses");
++            }
++            dedup = 1;
++            streamed_layers.resize(model.layers.size());
++            LLAMA_LOG_INFO("%s: Inkling SSD: %zu unique expert tensors, shared cache, pread/F_NOCACHE\n",
++                    __func__, stream->weights.size());
++        }
+         if (dedup > 0 && this->cpu_share > 0.0f) {
+             // the CPU part writes per-plan zero slots into the slot map, which a shared slot map would carry to the next pass
+             LLAMA_LOG_WARN("%s: LLAMA_MOE_CACHE_DEDUP is not supported with a CPU share of the misses, it is ignored\n", __func__);
+@@ -458,11 +486,22 @@ struct llama_moe_cache::impl {
+         // only cache layers that keep all of their experts in host memory, on the device the layer is assigned to
+         for (size_t il = 0; il < model.layers.size(); ++il) {
+             auto experts = llama_moe_cache_layer_experts(model.layers[il]);
+-            if (experts.empty() || !std::all_of(experts.begin(), experts.end(), llama_moe_cache_is_host_weight)) {
++            if (experts.empty()) {
++                continue;
++            }
++            if (!std::all_of(experts.begin(), experts.end(), [&](const ggml_tensor * t) {
++                    return llama_moe_cache_is_host_weight(t) && (!stream || stream->weights.count(t));
++                })) {
++                if (stream) {
++                    throw std::runtime_error("Inkling SSD requires every routed expert on CPU mmap");
++                }
+                 continue;
+             }
+             const auto it_dev = std::find_if(devices.begin(), devices.end(), [&](const device & d) { return ggml_backend_get_device(d.backend) == model.dev_layer(il); });
+             if (it_dev == devices.end()) {
++                if (stream) {
++                    throw std::runtime_error("Inkling SSD requires all routed layers on Metal (--gpu-layers all)");
++                }
+                 continue;
+             }
+             const int32_t id = (int32_t) (it_dev - devices.begin());
+@@ -555,12 +594,24 @@ struct llama_moe_cache::impl {
+             }
+             write_trace_header(split_sum);
+         }
++        size_t cache_floor = 0;
++        if (stream) {
++            for (const group & g : groups) {
++                cache_floor += alloc_size(g, n_expert_used);
++            }
++            if (size < cache_floor) {
++                throw std::runtime_error(format("Inkling SSD: need at least %zu MiB of expert cache for a single token",
++                        (cache_floor + 1048575)/1048576));
++            }
++        }
+         std::vector<size_t> n_tensors(devices.size(), 0);
+         size_t n_tensors_host = 0;
+         for (group & g : groups) {
+             const device & d = devices[g.id];
+             const int32_t n_expert  = g.ref[0]->ne[2];
+-            const size_t  budget    = (size_t) ((double) size*d.split/split_sum*g.host_bytes/d.host_bytes);
++            // Give each layout enough slots to decode one token before distributing the rest.
++            const size_t floor = stream ? alloc_size(g, n_expert_used) : 0;
++            const size_t budget = floor + (size_t) ((double) (size - cache_floor)*d.split/split_sum*g.host_bytes/d.host_bytes);
+             const int32_t max_slots = (dedup == 1 ? g.n_phys : g.layers.size())*n_expert;
+             while (g.n_slots < max_slots && alloc_size(g, g.n_slots + 1) <= budget) {
+                 g.n_slots++;
+@@ -918,12 +969,50 @@ struct llama_moe_cache::impl {
+                 while (i + n < fills.size() && fills[i + n].expert == fills[i].expert + (int32_t) n && fills[i + n].slot == fills[i].slot + (int32_t) n) {
+                     n++;
+                 }
+-                ggml_backend_tensor_set_async(backend, bank, (const uint8_t *) w->data + fills[i].expert*expert_size, fills[i].slot*expert_size, n*expert_size);
++                const size_t src_offset = fills[i].expert*expert_size;
++                const size_t dst_offset = fills[i].slot*expert_size;
++                if (stream) {
++                    const auto & source = stream->weights.at(w);
++                    // The router readback above synchronizes Metal before any bank slot can be overwritten.
++                    reads.push_back({stream->files.at(source.file).get(), static_cast<uint8_t *>(bank->data) + dst_offset,
++                            n*expert_size, source.offset + src_offset});
++                } else {
++                    ggml_backend_tensor_set_async(backend, bank, static_cast<const uint8_t *>(w->data) + src_offset,
++                            dst_offset, n*expert_size);
++                }
+                 bytes += n*expert_size;
+                 i += n;
+             }
+         }
+ 
++        if (!reads.empty()) {
++#if defined(__APPLE__)
++            // Bounded workers, no staging or extra copy on a unified-memory GPU.
++            const size_t workers = std::min<size_t>(4, reads.size());
++            dispatch_apply_f(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), this,
++                    [](void * context, size_t worker) {
++                        auto & jobs = static_cast<impl *>(context)->reads;
++                        const size_t stride = std::min<size_t>(4, jobs.size());
++                        for (size_t j = worker; j < jobs.size(); j += stride) {
++                            auto & job = jobs[j];
++                            job.error = job.file->read(job.dst, job.size, job.offset);
++                        }
++                    });
++#endif
++            for (const auto & job : reads) {
++                if (job.error) {
++                    GGML_ABORT("Inkling SSD: pread at %zu (%zu bytes): %s", job.offset, job.size, std::strerror(job.error));
++                }
++            }
++            disk_reads += reads.size();
++            disk_bytes += bytes;
++            reads.clear();
++        }
++
++        if (stream) {
++            streamed_layers[il] = true;
++        }
++
+         stats & st = ids.size() <= (size_t) 8*n_expert_used ? stats_small : stats_large;
+         st.hits   += n_hit;
+         st.misses += fills.size() + cpu.size();
+@@ -941,6 +1030,11 @@ struct llama_moe_cache::impl {
+     }
+ 
+     void log_stats() const {
++        if (stream) {
++            LLAMA_LOG_INFO("Inkling SSD: reads = %zu, read = %.2f MiB, routed applications = %zu/%zu\n",
++                    disk_reads, disk_bytes/1048576.0,
++                    (size_t) std::count(streamed_layers.begin(), streamed_layers.end(), true), streamed_layers.size());
++        }
+         auto log = [](const char * name, const stats & st) {
+             const size_t n = st.hits + st.misses;
+             if (n == 0) {
+@@ -970,6 +1064,12 @@ ggml_tensor * llama_moe_cache::get_experts(const ggml_tensor * w) const {
+ llama_moe_cache_lookup llama_moe_cache::build_lookup(const llm_graph_context & g, const llama_moe_cache_layer & layer, ggml_tensor * selected_experts) const {
+     const int32_t il = layer.il;
+     ggml_context * ctx0 = g.ctx0;
++    auto fallback = [&](const char * why) -> llama_moe_cache_lookup {
++        if (pimpl->stream) {
++            throw std::runtime_error(format("Inkling SSD: layer %d: %s (try -b 1 -ub 1 for an undersized cache)", il, why));
++        }
++        return {};
++    };
+ 
+     // part of the misses may be computed from the host experts, but not with weights before the FFN, LoRAs or rotated experts
+     bool cpu_part = !layer.weight_before_ffn && g.loras->empty();
+@@ -980,7 +1080,7 @@ llama_moe_cache_lookup llama_moe_cache::build_lookup(const llm_graph_context & g
+     ggml_tensor * cpu_map  = cpu_part ? pimpl->get_cpu_map(il, selected_experts->ne[1]) : nullptr;
+     ggml_tensor * slot_map = pimpl->get_slot_map(il, selected_experts->ne[1], selected_experts->ne[0], cpu_map != nullptr);
+     if (slot_map == nullptr) {
+-        return {};
++        return fallback("expert cache cannot hold this ubatch");
+     }
+     for (ggml_tensor * w : { layer.up_exps, layer.gate_exps, layer.down_exps, layer.gate_up_exps }) {
+         if (w == nullptr) {
+@@ -988,12 +1088,12 @@ llama_moe_cache_lookup llama_moe_cache::build_lookup(const llm_graph_context & g
+         }
+         ggml_tensor * experts = pimpl->get_experts(w);
+         if (experts == nullptr) {
+-            return {};
++            return fallback("expert tensor missing from cache");
+         }
+         // the device of the cache must compute the matmul, else the scheduler copies the cache to another backend
+         ggml_tensor * b = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, experts->ne[0], w == layer.down_exps ? selected_experts->ne[0] : 1, selected_experts->ne[1]);
+         if (!ggml_backend_supports_op(pimpl->backend(il), ggml_mul_mat_id(ctx0, experts, b, selected_experts))) {
+-            return {};
++            return fallback("Metal does not support this cached expert matmul");
+         }
+     }
+ 
+@@ -1007,7 +1107,7 @@ llama_moe_cache_lookup llama_moe_cache::build_lookup(const llm_graph_context & g
+     // the callback reads the selected experts, uploads the missing ones and updates the slot map
+     ggml_tensor * slots = ggml_get_rows(ctx0, slot_map, ids); // [1, n_expert_used*n_tokens]
+     if (!ggml_backend_supports_op(pimpl->backend(il), slots)) {
+-        return {};
++        return fallback("Metal does not support the expert slot lookup");
+     }
+     ggml_backend_sched_set_tensor_backend(g.sched, slots, pimpl->backend(il));
+     g.cb(slots, "ffn_moe_slots", il);

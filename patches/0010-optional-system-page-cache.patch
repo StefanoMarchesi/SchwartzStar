@@ -1,0 +1,39 @@
+diff --git a/src/llama-expert-io.h b/src/llama-expert-io.h
+--- a/src/llama-expert-io.h
++++ b/src/llama-expert-io.h
+@@ -22,6 +22,11 @@
+     return mode && std::strcmp(mode, "1") == 0;
+ }
+ 
++inline bool llama_expert_page_cache_enabled() {
++    const char * mode = std::getenv("LLAMA_INKLING_SSD_PAGE_CACHE");
++    return mode && std::strcmp(mode, "1") == 0;
++}
++
+ class llama_expert_file {
+ public:
+     explicit llama_expert_file(int original_fd) {
+@@ -30,7 +35,7 @@
+         if (fd < 0) {
+             throw std::runtime_error(std::string("Inkling SSD: dup: ") + std::strerror(errno));
+         }
+-        if (fcntl(fd, F_NOCACHE, 1) < 0) {
++        if (!llama_expert_page_cache_enabled() && fcntl(fd, F_NOCACHE, 1) < 0) {
+             const int err = errno;
+             close(fd);
+             throw std::runtime_error(std::string("Inkling SSD: F_NOCACHE: ") + std::strerror(err));
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -500,8 +500,9 @@
+             }
+             dedup = 1;
+             applications.assign(model.layers.size(), 0);
+-            LLAMA_LOG_INFO("%s: Inkling SSD: %zu unique expert tensors, shared cache on %s, pread/F_NOCACHE\n",
+-                    __func__, stream->weights.size(), buft_name);
++            LLAMA_LOG_INFO("%s: Inkling SSD: %zu unique expert tensors, shared cache on %s, %s\n",
++                    __func__, stream->weights.size(), buft_name,
++                    llama_expert_page_cache_enabled() ? "pread with system page cache" : "pread/F_NOCACHE");
+         }
+         if (dedup > 0 && this->cpu_share > 0.0f) {
+             // the CPU part writes per-plan zero slots into the slot map, which a shared slot map would carry to the next pass

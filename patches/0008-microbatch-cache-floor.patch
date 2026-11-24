@@ -1,0 +1,81 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -619,7 +619,7 @@
+             throw std::runtime_error("Inkling SSD requires --moe-cache-mib");
+         }
+         if (cparams.moe_cache_size > 0) {
+-            moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share);
++            moe_cache = std::make_unique<llama_moe_cache>(model, model.no_alloc(), backend_ptrs, backend_buft, cparams.moe_cache_size, cparams.moe_cache_cpu_share, cparams.n_ubatch);
+         }
+ 
+         sched_reserve();
+diff --git a/src/llama-moe-cache.h b/src/llama-moe-cache.h
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -36,7 +36,7 @@
+ public:
+     // backends are all the backends of the context, each GPU gets its own cache of the given size for the layers assigned to it
+     // cpu_share is the share of the misses computed on the CPU instead of uploaded
+-    llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share);
++    llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share, uint32_t n_ubatch);
+     ~llama_moe_cache();
+ 
+     // the experts of w in the cache, nullptr if w is not cached
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -464,7 +464,7 @@
+     // views used by copy_experts
+     ggml_context_ptr ctx_views;
+ 
+-    impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
++    impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share, uint32_t n_ubatch) :
+             stream(model.expert_stream), n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)) {
+         for (size_t i = 0; i < backends.size(); ++i) {
+             const auto dev_type = ggml_backend_dev_type(ggml_backend_get_device(backends[i]));
+@@ -624,14 +624,18 @@
+             }
+             write_trace_header(split_sum);
+         }
++        const auto slots_per_ubatch = [&](const group & g) {
++            const uint64_t selected = uint64_t(n_expert_used) * n_ubatch;
++            return static_cast<int32_t>(std::min<uint64_t>(g.ref[0]->ne[2], selected));
++        };
+         size_t cache_floor = 0;
+         if (stream) {
+             for (const group & g : groups) {
+-                cache_floor += alloc_size(g, n_expert_used);
++                cache_floor += alloc_size(g, slots_per_ubatch(g));
+             }
+             if (size < cache_floor) {
+-                throw std::runtime_error(format("Inkling SSD: need at least %zu MiB of expert cache for a single token",
+-                        (cache_floor + 1048575)/1048576));
++                throw std::runtime_error(format("Inkling SSD: microbatch %u needs at least %zu MiB of expert cache; "
++                        "increase --moe-cache-mib or reduce --ubatch-size", n_ubatch, (cache_floor + 1048575)/1048576));
+             }
+         }
+         std::vector<size_t> n_tensors(devices.size(), 0);
+@@ -639,8 +643,9 @@
+         for (group & g : groups) {
+             const device & d = devices[g.id];
+             const int32_t n_expert  = g.ref[0]->ne[2];
+-            // Give each layout enough slots to decode one token before distributing the rest.
+-            const size_t floor = stream ? alloc_size(g, n_expert_used) : 0;
++            // Every layout must hold the worst-case routing set for one microbatch.
++            // Mixed quantizations can leave smaller groups undersized with proportional shares alone.
++            const size_t floor = stream ? alloc_size(g, slots_per_ubatch(g)) : 0;
+             const size_t budget = floor + (size_t) ((double) (size - cache_floor)*d.split/split_sum*g.host_bytes/d.host_bytes);
+             const int32_t max_slots = (dedup == 1 ? g.n_phys : g.layers.size())*n_expert;
+             while (g.n_slots < max_slots && alloc_size(g, g.n_slots + 1) <= budget) {
+@@ -1139,8 +1144,8 @@
+     }
+ };
+ 
+-llama_moe_cache::llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
+-    pimpl(new impl(model, no_alloc, backends, bufts, size, cpu_share)) {
++llama_moe_cache::llama_moe_cache(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share, uint32_t n_ubatch) :
++    pimpl(new impl(model, no_alloc, backends, bufts, size, cpu_share, n_ubatch)) {
+ }
+ 
+ llama_moe_cache::~llama_moe_cache() = default;
