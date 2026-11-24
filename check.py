@@ -394,7 +394,7 @@ def run(args):
         "model": str(model), "profile": args.profile, "setup": {
             key: env.get(f"INKLING_{key}")
             for key in ("CTX", "BATCH", "CACHE_MIB", "CACHE_TYPE_K", "CTX_CHECKPOINTS",
-                        "SSD_READ_CACHE", "THREADS", "SERVER")
+                        "SSD_READ_CACHE", "REASONING_BUDGET", "THREADS", "SERVER")
         },
         "machine": {"before": before, "after": after},
         "startup_seconds": round(ready, 3), "memory": memory, "io": io, "server_tokens": server_tokens,

@@ -42,3 +42,15 @@ python3 tools/evalplus_smoke.py "$run_dir/gemma" \
 ```
 
 Run the printed Docker command for each output directory. It mounts that run directory and the scorer script and disables container network access. `evalplus-smoke-results.json` contains the task-level statuses. The dataset used here has SHA-256 `272720b90ac375502c8ed23cd791c2a93dfb22a911641a494da74a426c09f101`.
+
+## Official instruct-prompt pilot with reasoning enabled
+
+The three disclosed tasks were also run through EvalPlus 0.3.1's OpenAI-compatible instruct generator and official sanitizer. Both models used the resident profile, Metal, one slot, four threads, 8,192 context positions, and microbatch 512. Each task used one greedy response capped at 768 generated tokens. No assistant prefix was added in this protocol.
+
+| Model and server setting | Original tests | Expanded tests | Median server inference time |
+| --- | ---: | ---: | ---: |
+| Gemma 4 12B Q4_0, default | 3/3 | 3/3 | 20.88 s |
+| Inkling IQ2, reasoning off, zero budget | 0/3 | 0/3 | 55.11 s |
+| Inkling IQ2, reasoning on, minimal effort, 128-token budget | 3/3 | 3/3 | 28.29 s |
+
+The zero-budget configuration repeatedly opened and closed an empty thinking block and reached the 768-token cap for all three tasks. With reasoning on, the model produced visible code and stopped after 379, 437, and 263 generated tokens. This pilot uses the same official tasks as the completion experiment above, with a different prompt protocol and Inkling runtime profile. [EvalPlus generation protocol](https://github.com/evalplus/evalplus/blob/master/docs/cli.md)

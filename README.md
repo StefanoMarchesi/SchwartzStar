@@ -37,6 +37,8 @@ curl -fsS http://127.0.0.1:8080/v1/chat/completions \
 
 `INKLING_CTX`, `INKLING_BATCH`, `INKLING_CACHE_MIB`, `INKLING_THREADS`, and `INKLING_PORT` override the profile. `INKLING_CACHE_TYPE_K` defaults to `f16`. `q4_0` is an experimental option for the key cache. The value cache stays F16. The server reserves enough expert slots for each microbatch and reports the required cache size if the settings cannot fit. `INKLING_CTX_CHECKPOINTS` controls the number of in-memory prefix checkpoints and defaults to two.
 
+Set `INKLING_REASONING_BUDGET=128` to enable minimal reasoning with a 128-token budget. This setting recovered visible code on all three tasks of the initial EvalPlus instruct pilot in resident mode. Include room for the reasoning and final answer in the client’s output limit. [Reasoning pilot](results/humaneval-smoke.md#official-instruct-prompt-pilot-with-reasoning-enabled)
+
 ## Measurements on a 16 GB M1 Pro
 
 | Model and configuration | Input / context | Prefill | Decode | First text | Peak process footprint |
@@ -60,6 +62,8 @@ In a separate retrieval check, IQ2 recovered all three records in an 8,000-token
 At 16,000 evaluated tokens in the same raw completion test, IQ2 again recovered all three codes and peaked at 4,109 MiB RSS. Resident Gemma returned three incorrect codes and used 8,024 MiB RSS. Gemma began answering in 118 seconds, versus 267 seconds for IQ2. The result covers one constrained retrieval test with Q4_0 keys. [Configuration and memory metrics](results/schwartzstar.md#comparison-with-resident-gemma-at-8k-and-16k)
 
 On the first three tasks from HumanEval+, Inkling IQ2 passed 2/3 with an explicit assistant text prefix. Gemma passed 3/3. This smoke test uses the official EvalPlus tests for those tasks. [Task-level results and reproduction](results/humaneval-smoke.md)
+
+Both models also passed all 19 tests on one guided Flask case from SWE-bench Lite after receiving failure feedback. Gemma finished sooner. Inkling solved the case with one new API parameter. [Flask case and protocol](results/swebench-lite-smoke.md)
 
 ## How it works
 

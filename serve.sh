@@ -25,6 +25,7 @@ threads="${INKLING_THREADS:-4}"
 cache_type_k="${INKLING_CACHE_TYPE_K:-f16}"
 checkpoints="${INKLING_CTX_CHECKPOINTS:-2}"
 read_cache="${INKLING_SSD_READ_CACHE:-0}"
+reasoning_budget="${INKLING_REASONING_BUDGET:-0}"
 gpu=all
 
 for number in "$ctx" "$batch" "$cache" "$port" "$threads" "$checkpoints"; do
@@ -37,6 +38,16 @@ fi
 if [[ "$read_cache" != 0 && "$read_cache" != 1 ]]; then
     echo 'INKLING_SSD_READ_CACHE must be 0 or 1.' >&2
     exit 2
+fi
+if [[ ! "$reasoning_budget" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    echo 'INKLING_REASONING_BUDGET must be a non-negative number of tokens.' >&2
+    exit 2
+fi
+reasoning=off
+reasoning_effort=none
+if [[ "$reasoning_budget" != 0 ]]; then
+    reasoning=on
+    reasoning_effort=minimal
 fi
 # llama-server probes recurrent-state rollback with a two-token logical batch.
 logical_batch=$batch
@@ -70,5 +81,5 @@ exec "$bin" --model "$model" --alias inkling-2-mini --host 127.0.0.1 --port "$po
     --parallel 1 --no-warmup --cache-ram 0 --no-cache-idle-slots --no-ui --cors-origins "http://127.0.0.1:$port,http://localhost:$port" \
     --ctx-checkpoints "$checkpoints" \
     --flash-attn off --cache-type-k "$cache_type_k" --cache-type-v f16 \
-    --verbosity 4 --reasoning off --reasoning-effort none --reasoning-budget 0 \
+    --verbosity 4 --reasoning "$reasoning" --reasoning-effort "$reasoning_effort" --reasoning-budget "$reasoning_budget" \
     ${extra[@]+"${extra[@]}"}
