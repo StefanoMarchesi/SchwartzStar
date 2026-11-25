@@ -35,7 +35,7 @@ Path(sys.argv[1]).write_text(case["test_patch"], encoding="utf-8")
 PY
 ```
 
-Start `./serve.sh coding` and run the probe with `--prefill-json`. For Gemma, stop Inkling first, start `INKLING_CTX=8192 INKLING_BATCH=512 ./serve.sh resident "$GEMMA_MODEL"`, give the probe a fresh output directory, and omit `--prefill-json`.
+Start `INKLING_REASONING_BUDGET=0 ./serve.sh coding` and run the probe with `--prefill-json`. For Gemma, stop Inkling first, start `INKLING_CTX=8192 INKLING_BATCH=512 ./serve.sh resident "$GEMMA_MODEL"`, give the probe a fresh output directory, and omit `--prefill-json`.
 
 ```bash
 python3 tools/swebench_lite_probe.py "$case_dir/inkling-run" \

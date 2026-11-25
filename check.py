@@ -399,12 +399,15 @@ def run(args):
         "prompt_n": sum(int(t.get("prompt_n", 0)) for t in counted),
         "predicted_n": sum(int(t.get("predicted_n", 0)) for t in counted),
     }
+    setup = {
+        key: env.get(f"INKLING_{key}")
+        for key in ("CTX", "BATCH", "CACHE_MIB", "CACHE_TYPE_K", "CTX_CHECKPOINTS",
+                    "SSD_READ_CACHE", "REASONING_BUDGET", "THREADS", "SERVER")
+    }
+    if not setup["REASONING_BUDGET"]:
+        setup["REASONING_BUDGET"] = "128" if args.profile == "coding" else "0"
     report = {
-        "model": str(model), "profile": args.profile, "setup": {
-            key: env.get(f"INKLING_{key}")
-            for key in ("CTX", "BATCH", "CACHE_MIB", "CACHE_TYPE_K", "CTX_CHECKPOINTS",
-                        "SSD_READ_CACHE", "REASONING_BUDGET", "THREADS", "SERVER")
-        },
+        "model": str(model), "profile": args.profile, "setup": setup,
         "machine": {"before": before, "after": after},
         "startup_seconds": round(ready, 3), "memory": memory, "io": io, "server_tokens": server_tokens,
         "completion": result, "repetitions": repetitions,

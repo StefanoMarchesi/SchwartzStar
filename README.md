@@ -20,12 +20,12 @@ MODEL=$(./download.sh iq2)
 ./serve.sh coding "$MODEL"
 ```
 
-The server listens on `127.0.0.1:8080` and advertises `inkling-2-mini`. A GGUF supplied by path must use the current `inkling2_loop` layout. Use a minimal prompt and tool set for interactive work. The shipped launcher uses a zero reasoning budget so short responses have room for visible output.
+The server listens on `127.0.0.1:8080` and advertises `inkling-2-mini`. A GGUF supplied by path must use the current `inkling2_loop` layout. Use a minimal prompt and tool set for interactive work. The `coding` profile enables a 128-token reasoning budget by default; allow room for reasoning and the final answer in the client's output limit.
 
 ```bash
 curl -fsS http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"inkling-2-mini","messages":[{"role":"user","content":"Write a Python function that clamps a number to a range."}],"max_tokens":128,"stream":true}'
+  -d '{"model":"inkling-2-mini","messages":[{"role":"user","content":"Write a Python function that clamps a number to a range."}],"max_tokens":1024,"stream":true}'
 ```
 
 | Profile | Default GGUF | Expert cache | Context | Microbatch |
@@ -37,7 +37,7 @@ curl -fsS http://127.0.0.1:8080/v1/chat/completions \
 
 `INKLING_CTX`, `INKLING_BATCH`, `INKLING_CACHE_MIB`, `INKLING_THREADS`, and `INKLING_PORT` override the profile. `INKLING_CACHE_TYPE_K` defaults to `f16`. `q4_0` is an experimental option for the key cache. The value cache stays F16. The server reserves enough expert slots for each microbatch and reports the required cache size if the settings cannot fit. `INKLING_CTX_CHECKPOINTS` controls the number of in-memory prefix checkpoints and defaults to two.
 
-Set `INKLING_REASONING_BUDGET=128` to enable minimal reasoning with a 128-token budget. This setting recovered visible code on all three tasks of the initial EvalPlus instruct pilot in resident mode. Include room for the reasoning and final answer in the client’s output limit. [Reasoning pilot](results/humaneval-smoke.md#official-instruct-prompt-pilot-with-reasoning-enabled)
+The `coding` profile defaults to minimal reasoning with a 128-token budget; set `INKLING_REASONING_BUDGET` to change it, or to `0` to turn reasoning off. The other profiles default to `0`. A budget of 128 recovered visible code on all three tasks of the initial EvalPlus instruct pilot in resident mode. This small pilot does not establish the best budget for complex work. [Reasoning pilot](results/humaneval-smoke.md#official-instruct-prompt-pilot-with-reasoning-enabled)
 
 ## Measurements on a 16 GB M1 Pro
 
@@ -51,7 +51,7 @@ These are single runs on the internal SSD. The 128K row measures startup and sho
 
 ```bash
 MODEL=$(./download.sh iq2)
-INKLING_CTX=4096 python3 check.py run coding "$MODEL" iq2-ssd-p512 \
+INKLING_CTX=4096 INKLING_REASONING_BUDGET=0 python3 check.py run coding "$MODEL" iq2-ssd-p512 \
   --prefix-only 512 --tokens 24 --timeout 180
 ```
 

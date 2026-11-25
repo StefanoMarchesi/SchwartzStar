@@ -68,7 +68,7 @@ Inkling implemented the integer-cent tax and total, forwarded the tax into the c
 
 ```bash
 ./download.sh iq2
-INKLING_PORT=18080 ./serve.sh coding
+INKLING_PORT=18080 INKLING_REASONING_BUDGET=0 ./serve.sh coding
 ```
 
 In another terminal, with PHP installed on macOS:

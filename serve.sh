@@ -3,8 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 profile="${1:-quality}"
+reasoning_default=0
 case "$profile" in
-    coding)   file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=8192; batch=512; cache=3072 ;;
+    coding)   file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=8192; batch=512; cache=3072; reasoning_default=128 ;;
     resident) file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=2048; batch=16; cache=0 ;;
     minimum)  file=Inkling-2-Mini-UD-IQ1_S.gguf;   ctx=1024; batch=1; cache=512 ;;
     quality)  file=Inkling-2-Mini-IQ4_NL.gguf;     ctx=1024; batch=2; cache=768 ;;
@@ -25,7 +26,7 @@ threads="${INKLING_THREADS:-4}"
 cache_type_k="${INKLING_CACHE_TYPE_K:-f16}"
 checkpoints="${INKLING_CTX_CHECKPOINTS:-2}"
 read_cache="${INKLING_SSD_READ_CACHE:-0}"
-reasoning_budget="${INKLING_REASONING_BUDGET:-0}"
+reasoning_budget="${INKLING_REASONING_BUDGET:-$reasoning_default}"
 gpu=all
 
 for number in "$ctx" "$batch" "$cache" "$port" "$threads" "$checkpoints"; do

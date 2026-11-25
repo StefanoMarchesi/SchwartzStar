@@ -35,7 +35,7 @@ IQ2 SSD with 8,192 configured positions, microbatch 256, 2,304 MiB of expert cac
 
 ```bash
 IQ2=$(./download.sh iq2)
-INKLING_CTX=8192 INKLING_BATCH=256 INKLING_CACHE_MIB=2304 INKLING_CACHE_TYPE_K=q4_0 \
+INKLING_CTX=8192 INKLING_BATCH=256 INKLING_CACHE_MIB=2304 INKLING_CACHE_TYPE_K=q4_0 INKLING_REASONING_BUDGET=0 \
   python3 check.py run coding "$IQ2" iq2-8k-retrieval --prefix-only 8000 --retrieve --tokens 96 --timeout 600
 ```
 
@@ -55,7 +55,7 @@ The same raw Completion probe was run on Gemma 4 12B Instruct Q4_0 at 8,000 and 
 In the 16K trial, IQ2 recovered all three codes with 49% lower peak RSS. Gemma processed the input and generated text faster. The macOS physical-footprint metric orders the models differently because of how it charges file-backed mappings and private buffers. System swap measures activity across the laptop and starting conditions varied. These results cover a single structured retrieval scenario on raw completion with quantized keys. Chat formatting, the default F16 keys, and long-context code edits need separate evaluation.
 
 ```bash
-INKLING_CTX=16384 INKLING_BATCH=256 INKLING_CACHE_MIB=2304 INKLING_CACHE_TYPE_K=q4_0 \
+INKLING_CTX=16384 INKLING_BATCH=256 INKLING_CACHE_MIB=2304 INKLING_CACHE_TYPE_K=q4_0 INKLING_REASONING_BUDGET=0 \
   python3 check.py run coding "$IQ2" iq2-16k-retrieval --prefix-only 16000 --retrieve --tokens 64 --timeout 600
 INKLING_CTX=16384 INKLING_BATCH=256 INKLING_CACHE_TYPE_K=q4_0 \
   python3 check.py run resident "$GEMMA_MODEL" gemma-16k-retrieval --prefix-only 16000 --retrieve --tokens 64 --timeout 600
