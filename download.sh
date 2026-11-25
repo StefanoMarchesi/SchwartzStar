@@ -36,7 +36,12 @@ if [[ -f "$path" ]]; then
     verify "$path" || { echo "Existing file failed verification: $path" >&2; exit 1; }
 else
     lock="$path.lock"
-    mkdir "$lock" || { echo "A download is active or a previous run left a lock: $lock" >&2; exit 1; }
+    mkdir "$lock" || {
+        echo "A download is active or a previous run left a lock: $lock" >&2
+        echo "If no download is running, remove the empty lock directory and retry:" >&2
+        echo "  rmdir \"$lock\"" >&2
+        exit 1
+    }
     trap 'rmdir "$lock"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -46,7 +51,13 @@ else
             curl -fL --retry 3 --continue-at - --output "$part" \
                 "https://huggingface.co/$repo/resolve/$revision/$file?download=true" >&2
         fi
-        verify "$part" || { echo "Download incomplete or hash mismatch: $part" >&2; exit 1; }
+        verify "$part" || {
+            echo "Download incomplete or hash mismatch: $part" >&2
+            echo "To start fresh, move this file to an unused name and retry, for example:" >&2
+            echo "  mv -n \"$part\" \"$part.failed\"" >&2
+            echo "If that name exists, choose a different one before retrying." >&2
+            exit 1
+        }
         mv "$part" "$path"
     fi
 fi
