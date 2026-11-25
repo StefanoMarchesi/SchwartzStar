@@ -97,8 +97,8 @@ When the model has a LiteLLM cost entry, use `cost_tracking: default` and, if
 needed, set `litellm_model_registry` to a private registry JSON file. With an
 unregistered local model, strict default tracking can fail after a successful
 response because mini-SWE-agent asks LiteLLM to calculate a price. The
-`ignore_errors` setting prevents that failure, but it reports no reliable
-spend and makes a cost limit ineffective; keep step and wall-time limits.
+`ignore_errors` setting prevents that failure, but missing price information
+can make cost reporting and limits unreliable; keep step and wall-time limits.
 
 `OPENAI_API_KEY` is read by the OpenAI/LiteLLM provider. For an unauthenticated
 loopback server, a placeholder may be sufficient; for an authenticated one,
