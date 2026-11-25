@@ -39,6 +39,15 @@ curl -fsS http://127.0.0.1:8080/v1/chat/completions \
 
 The default 8K context is suitable for short prompts, not established as sufficient for repository-scale agent tasks. In one SWE-bench Pro Hard pilot, a request reached 20,546 tokens and exceeded a 16,384-position limit before a patch was submitted. A 131,072-position configuration processed more than 22,000 tokens before the pilot was stopped, but neither run produced a score. Increasing the configured context also increases memory use; a large allocation alone does not demonstrate that a fully populated context is usable. [Pilot details](results/banded-ssd-pilot.md)
 
+To experiment with the 128K allocation used in that pilot, start the server with:
+
+```bash
+INKLING_CTX=131072 INKLING_BATCH=64 INKLING_CACHE_MIB=2304 \
+  INKLING_CACHE_TYPE_K=q4_0 ./serve.sh coding "$MODEL"
+```
+
+This configuration uses experimental quantized keys and a smaller microbatch. It can be substantially slower and put more pressure on memory than the default. Full 128K retrieval and coding quality, including tool calls, remain unverified; monitor memory and swap on your own machine.
+
 The `coding` profile defaults to minimal reasoning with a 128-token budget; set `INKLING_REASONING_BUDGET` to change it, or to `0` to turn reasoning off. The other profiles default to `0`. A budget of 128 recovered visible code on all three tasks of the initial EvalPlus instruct pilot in resident mode. This small pilot does not establish the best budget for complex work. [Reasoning pilot](results/humaneval-smoke.md#official-instruct-prompt-pilot-with-reasoning-enabled)
 
 To connect a coding client, see the [mini-SWE-agent setup](docs/mini-swe-agent.md), including its host execution and context limitations.
