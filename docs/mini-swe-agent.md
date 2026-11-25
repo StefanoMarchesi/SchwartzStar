@@ -132,13 +132,14 @@ complex repairs. Set `INKLING_REASONING_BUDGET` when starting the server to
 compare budgets, and leave room for reasoning and final output in the client's
 generation limit.
 
-This workflow is a supervised smoke path. Parser success, a responding
-endpoint, or one successful edit does not establish coding quality, patch
-correctness, performance, or SWE-bench/mini-SWE-agent suite results. No suite
-or benchmark is promised by this guide. These CLI settings have been checked
-with the 2.4.6 configuration parser; the exact interactive recipe has not yet
-been validated end to end. The reported agent smokes used a separate sandboxed
-environment.
+This workflow was checked end to end with mini-SWE-agent 2.4.6, the local
+server and a disposable shell fixture. The agent read the files, made the fix,
+ran the test and submitted after five model calls. Two intermediate commands
+used GNU options unsupported by macOS; the agent recovered after their errors.
+Commands were reviewed interactively, and the final test was run again
+independently. This single guided check does not establish performance or
+quality on real repositories. The earlier reported agent smokes used a
+separate sandboxed environment.
 
 ## Useful checks before a run
 
