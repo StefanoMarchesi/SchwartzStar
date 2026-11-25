@@ -41,6 +41,8 @@ The default 8K context is suitable for short prompts, not established as suffici
 
 The `coding` profile defaults to minimal reasoning with a 128-token budget; set `INKLING_REASONING_BUDGET` to change it, or to `0` to turn reasoning off. The other profiles default to `0`. A budget of 128 recovered visible code on all three tasks of the initial EvalPlus instruct pilot in resident mode. This small pilot does not establish the best budget for complex work. [Reasoning pilot](results/humaneval-smoke.md#official-instruct-prompt-pilot-with-reasoning-enabled)
 
+To connect a coding client, see the [mini-SWE-agent setup](docs/mini-swe-agent.md), including its host execution and context limitations.
+
 ## Measurements on a 16 GB M1 Pro
 
 | Model and configuration | Input / context | Prefill | Decode | First text | Peak process footprint |
