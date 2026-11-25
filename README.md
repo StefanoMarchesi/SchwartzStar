@@ -65,6 +65,8 @@ On the first three tasks from HumanEval+, Inkling IQ2 passed 2/3 with an explici
 
 Both models also passed all 19 tests on one guided Flask case from SWE-bench Lite after receiving failure feedback. Gemma finished sooner. Inkling solved the case with one new API parameter. [Flask case and protocol](results/swebench-lite-smoke.md)
 
+In a separate mini-SWE-agent smoke test, Inkling fixed a small shell script in both runs while Gemma exhausted the tool-call limit without a patch. The order was reversed for the repeat. [Fixture and results](results/mini-swe-agent-smoke.md)
+
 ## How it works
 
 - Inkling’s twelve central layers run three times. The 24 physical layers yield 48 applications, each with its own state. `adishik`’s shared expert cache work lets repeated applications reuse the same cached weights. [Thinking Machines Lab](https://thinkingmachines.ai/news/inkling-2-mini/) · [Upstream model support](https://github.com/ggml-org/llama.cpp/pull/32694) · [Expert cache deduplication](https://github.com/ggml-org/llama.cpp/issues/32744)
