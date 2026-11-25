@@ -70,3 +70,8 @@ With the expert cache fixed, moving to IQ3 saves approximately 443 MiB of reside
 5. Validate genuinely populated contexts at 128K, 256K, 512K, and 1M. Record time to first token, prefill and decode tok/s, physical footprint, swap, bytes read, and multi-hop retrieval tests at distant positions. With DSpark, also measure accepted-draft share and the cost of rolling back every cache per pass.
 
 The package runs the expert-streaming path with a short context and estimates the long-path budget. The Turbo3/SSD runtime port and M1 Pro long-context numbers remain open.
+# Experimental banded-attention build
+
+An isolated build based on the Unsloth Metal banded-attention proposal was compiled on an M1 Pro on 25 November 2026 with the SchwartzStar patch stack applied. IQ2 resident inference with Q4_0 keys and F16 values completed a 512-token prompt and generated 24 tokens. The server reported Flash Attention enabled. That log does not identify every selected kernel or establish numerical parity.
+
+The IQ2 SSD path failed while reserving the expert-cache matmul at layer 5, both with microbatch 512 and with microbatch 1. No prompt was evaluated in either streaming run. The experimental Metal backend rejects NVFP4 in its matmul support check, whereas the working SchwartzStar base has NVFP4 support. The IQ2 checkpoint includes NVFP4 expert groups. Identifying the exact rejected tensor and bringing all necessary Metal kernels across are outstanding work. The experimental build and its long-context performance remain unvalidated. [Unsloth Metal banded-attention proposal](https://github.com/unslothai/llama.cpp/pull/431)
