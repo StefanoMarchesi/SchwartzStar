@@ -1,0 +1,9 @@
+# Interrupted DeepSWE SuperJSON pilot on a 16 GB M1 Pro
+
+A single [DeepSWE v1.1](https://github.com/datacurve-ai/deep-swe) task, `superjson-error-stack-serialization`, was attempted using the host-side mini-SWE-agent 2.4.6 adapter and Pier with a separate verifier. The model was Inkling 2 Mini UD-IQ2_XXS using the experimental SSD/Metal build, 131,072 allocated positions, Q4_0 keys, F16 values, a 2,304 MiB expert cache, microbatch 256 and reasoning budget 128. The model-request timeout was 900 seconds; the task's 10,800-second agent limit and 1,800-second verifier limit were not changed.
+
+The run was stopped at the user's request after approximately 75 minutes, before the agent submitted a patch or the verifier ran. It recorded 21 tool calls and a largest observed prompt of 32,387 tokens. A checkpoint of five untracked source files and the trajectory was retained for diagnosis; it is not an agent submission. **There is no valid DeepSWE reward or suite score for this attempt.** A 128K allocation does not establish that a 128K prompt was processed or that its contents were reliably recalled.
+
+The sampled peak model-process RSS was 6,228 MiB and the sampled peak physical footprint was 5,487 MiB. The maximum system-wide swap increase observed was 3,500 MiB; it cannot be attributed solely to the model. The interrupted host worker continued retrying an in-flight model request after cancellation, and its process required a forced stop after normal signals. This is a lifecycle limitation of the experimental harness, not a model score.
+
+Before the model run, a separate deterministic preflight used a mock OpenAI endpoint to exercise the host adapter, commit collection and the real Pier verifier on the same task. That preflight returned reward 0 for a dummy patch and does not measure Inkling. See the [experimental single-task runner](../tools/deepswe-pilot/README.md) for setup and protocol limits.
