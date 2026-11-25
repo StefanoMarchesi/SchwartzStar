@@ -142,8 +142,17 @@ def fixed_prefix(base, n_tokens):
     ids = query(base, "/tokenize", {"content": FILLER}, timeout=60)["tokens"]
     if not ids:
         raise RuntimeError("The tokenizer returned no tokens")
-    text = FILLER * (n_tokens // len(ids) + 2)
-    ids = query(base, "/tokenize", {"content": text}, timeout=60)["tokens"][:n_tokens]
+    repeats = n_tokens // len(ids) + 2
+    while True:
+        text = FILLER * repeats
+        ids = query(base, "/tokenize", {"content": text}, timeout=60)["tokens"]
+        if not ids:
+            raise RuntimeError("The tokenizer returned no tokens for the repeated filler")
+        if len(ids) >= n_tokens:
+            ids = ids[:n_tokens]
+            break
+        # Token boundaries may merge when the filler is repeated.
+        repeats = max(repeats + 1, (repeats * n_tokens + len(ids) - 1) // len(ids))
     if len(ids) != n_tokens:
         raise RuntimeError(f"Expected a {n_tokens}-token prefix, got {len(ids)}")
     return query(base, "/detokenize", {"tokens": ids}, timeout=60)["content"], n_tokens
