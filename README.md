@@ -52,6 +52,8 @@ The `coding` profile defaults to minimal reasoning with a 128-token budget; set 
 
 To connect a coding client, see the [mini-SWE-agent setup](docs/mini-swe-agent.md), including its host execution and context limitations.
 
+An experimental [single-task DeepSWE runner](tools/deepswe-pilot/README.md) is available for a local server and Pier. Its workflow has passed a simulated end-to-end preflight; a real DeepSWE model score is not yet available.
+
 ## Measurements on a 16 GB M1 Pro
 
 | Model and configuration | Input / context | Prefill | Decode | First text | Peak process footprint |
