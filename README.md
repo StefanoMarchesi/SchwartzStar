@@ -37,6 +37,8 @@ curl -fsS http://127.0.0.1:8080/v1/chat/completions \
 
 `INKLING_CTX`, `INKLING_BATCH`, `INKLING_CACHE_MIB`, `INKLING_THREADS`, and `INKLING_PORT` override the profile. `INKLING_CACHE_TYPE_K` defaults to `f16`. `q4_0` is an experimental option for the key cache. The value cache stays F16. The server reserves enough expert slots for each microbatch and reports the required cache size if the settings cannot fit. `INKLING_CTX_CHECKPOINTS` controls the number of in-memory prefix checkpoints and defaults to two.
 
+The default 8K context is suitable for short prompts, not established as sufficient for repository-scale agent tasks. In one SWE-bench Pro Hard pilot, a request reached 20,546 tokens and exceeded a 16,384-position limit before a patch was submitted. A 131,072-position configuration processed more than 22,000 tokens before the pilot was stopped, but neither run produced a score. Increasing the configured context also increases memory use; a large allocation alone does not demonstrate that a fully populated context is usable. [Pilot details](results/banded-ssd-pilot.md)
+
 The `coding` profile defaults to minimal reasoning with a 128-token budget; set `INKLING_REASONING_BUDGET` to change it, or to `0` to turn reasoning off. The other profiles default to `0`. A budget of 128 recovered visible code on all three tasks of the initial EvalPlus instruct pilot in resident mode. This small pilot does not establish the best budget for complex work. [Reasoning pilot](results/humaneval-smoke.md#official-instruct-prompt-pilot-with-reasoning-enabled)
 
 ## Measurements on a 16 GB M1 Pro
