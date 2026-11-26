@@ -50,3 +50,20 @@ In the SSD run, expert reads took 31.5 ms and the router read-back wait 16.5 ms 
 Turning off the extra command buffer per graph (`n_cb` 0 instead of 1) cut buffers from 195 to 146 and did not help: 258 ms against 226 ms per token in back-to-back runs. The same setting measured 206 ms in an earlier run, so run-to-run noise is about 20 ms.
 
 A control that copied cache misses from host memory instead of reading the SSD was not usable on 16 GB: keeping the experts resident caused heavy memory pressure.
+
+### Cutting the resident graph into pieces
+
+Later the same day: Metal concurrency or graph optimization turned off in resident mode left GPU busy time at 55 to 59 ms per token, so losing them does not explain the 120 ms.
+
+A temporary scheduler probe then cut each resident graph split into pieces of 230 nodes, waited for each piece, and optionally slept before the next one. The same math produced the same tokens.
+
+| Resident run | Command buffers per token | GPU busy ms per token | GPU idle ms per token |
+| --- | ---: | ---: | ---: |
+| normal | 2.9 | 57.0 | 20.5 |
+| cut, no added pause | 94 | 93.2 | 64.5 |
+| cut, 0.5 ms pause | 93 | 129.5 | 131.0 |
+| cut, 1.5 ms pause | 99 | 153.6 | 202.8 |
+
+GPU busy time rose with fragmentation and rose further as the pauses grew. This reproduces the SSD effect without any SSD read: the GPU does the same work more slowly when it arrives in small pieces with gaps. Lower GPU clocks during gaps would explain the second step; clock speed was not measured. One run per row. The first normal run was stopped by the swap guard, and the normal row is the repeat at the end of the series.
+
+This points at the pauses and the number of command buffers as the target for faster SSD decode, rather than at the Metal kernels.
