@@ -10,7 +10,7 @@ cache_v=f16
 checkpoint_default=2
 build_default="$PWD/build"
 case "$profile" in
-    long)     file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=32768; batch=256; cache=3072
+    long)     file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=32768; batch=512; cache=3072
               flash=on; cache_k=q4_0; cache_v=q4_0; checkpoint_default=8; build_default="$PWD/build/banded" ;;
     coding)   file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=8192; batch=512; cache=3072; reasoning_default=128 ;;
     resident) file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=2048; batch=16; cache=0 ;;

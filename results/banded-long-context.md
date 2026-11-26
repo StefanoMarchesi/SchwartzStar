@@ -89,3 +89,27 @@ A second run with eight checkpoints prefilled the start of each answer, because 
 | rewrite the end of the first message | 7399 | 8.8 | 171.8 | yes | 0.005 |
 
 In the second case the model returned the wrong code both with and without the cache. One run per case; this does not measure answer quality.
+
+## Microbatch 256 against 512
+
+`q4_0`/`q4_0`, expert cache 3072 MiB, no checkpoints, usual applications open.
+
+At 7,895 tokens, each setting ran twice in a mirrored order (A B C D D C B A). Outputs had the same token IDs. Log-probabilities moved by up to 0.9 between microbatch sizes.
+
+| Expert cache / microbatch | Prefill tok/s, mean of 2 | Decode tok/s, mean of 2 | Compute buffer MiB |
+| --- | ---: | ---: | ---: |
+| 2304 / 256 | 62.6 | 4.02 | 436 |
+| 3072 / 256 | 69.5 | 4.95 | 436 |
+| 2304 / 512 | 82.4 | 4.12 | 872 |
+| 3072 / 512 | 83.1 | 4.87 | 872 |
+
+At 31,883 tokens with a 3072 MiB cache, in the order 256, 512, 512, 256. All runs returned 8 of 8 codes with the same token IDs.
+
+| Run | Microbatch | Prompt s | Prefill tok/s | Decode tok/s | Lowest free memory sample | Largest swap growth MB |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 256 | 622 | 51.3 | 3.47 | 1% | 8808 |
+| 2 | 512 | 472 | 67.6 | 5.00 | 11% | 2542 |
+| 3 | 512 | 482 | 66.1 | 2.24 | 12% | 1634 |
+| 4 | 256 | 574 | 55.6 | 2.69 | 11% | 1118 |
+
+Run 1 started with the most swap in use and its memory figures stand apart, so other processes probably affected it. These samples do not show that either size needs less free memory. The compute buffer is 2672 MiB at 512 against 1336 MiB at 256. The `long` profile now uses 512.

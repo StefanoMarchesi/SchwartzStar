@@ -64,9 +64,9 @@ MODEL=$(./download.sh iq2)
 ./serve.sh long "$MODEL"
 ```
 
-It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert cache, microbatch 256 and up to eight prefix checkpoints. Treat it as a beta. [Measurements and method](results/banded-long-context.md)
+It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert cache, microbatch 512 and up to eight prefix checkpoints. Treat it as a beta. `INKLING_BATCH=256` halves the Metal compute buffer (1,336 instead of 2,672 MiB at 32K) and processes prompts more slowly. [Measurements and method](results/banded-long-context.md)
 
-- On a 16 GB M1 Pro, two runs of one 31,883-token prompt both returned 8 of 8 planted codes. Prompt processing took 568 to 644 s, decode ran at 2.9 to 5.6 tok/s and the peak process footprint was 3,611 to 3,722 MiB.
+- On a 16 GB M1 Pro, a 31,883-token prompt returned 8 of 8 planted codes in every run. At microbatch 512 (two runs) prompt processing took 472 to 482 s, against 574 to 622 s at 256 in the same alternating series. Decode varied from 2.2 to 5.0 tok/s across that series. The peak process footprint was about 3,660 MiB, which leaves out file-mapped model memory.
 - A fresh clone built with `INKLING_VARIANT=banded ./build.sh`, fetching the pinned commit from GitHub. In an 8K recall run, `./serve.sh long` from that clone matched the earlier token IDs and log-probabilities exactly.
 - Through `/v1/chat/completions`, in a test with about 7,900 tokens and eight checkpoints, appending a turn, replacing the last user message and rewriting the end of the first message reused most of the prompt (13.0, 3.7 and 8.8 s against 104 to 172 s without the cache). Each reused answer had the same tokens as the uncached one. With two checkpoints the rewrite reused nothing. Checkpoints are made at user message boundaries and near the end of the prompt: a change before the oldest usable one reprocesses everything. In a raw `/completion` test with two checkpoints, a changed question near the end reused nothing.
 - Recall tests are synthetic and did not separate cache formats: every tested format passed. The coding check is one small two-turn PHP task. Quality on real code and agent work is not established.
