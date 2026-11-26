@@ -2,6 +2,8 @@
 
 Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh`.
 
+Schiltmans's `LLAMA_MOE_CACHE_DIRECT_IDS` in [per-layer expert streaming](https://github.com/alexschiltmans/llama.cpp-per-layer-experts/blob/per-layer-experts/docs/moe-ssd-streaming.md) did this earlier and goes further: it also reads the router ids from shared memory and drops the second wait.
+
 ## Change
 
 [`ssd-gap.md`](ssd-gap.md) showed that splitting GPU work into many small command buffers with pauses slows it down. SSD streaming does this: for every MoE layer it reads the selected expert ids back, loads missing experts and then uploads the slot map with a small GPU copy.

@@ -6,6 +6,16 @@ Apple M1 Pro, 16 GB, 26 November 2026. Experimental: nothing in `build.sh` or `s
 
 Running a small separate GPU load next to the server made SSD-streaming decode **47% to 142% faster** in four pairs of runs (median 71%), with identical output. The load uses power for as long as it runs. Power and temperature were not measured.
 
+## Prior work
+
+**Neither the slowdown nor the remedy is new.** These tests were run before we looked for earlier work, and an earlier version of this note did not credit it.
+
+- [Alex Schiltmans's per-layer expert streaming](https://github.com/alexschiltmans/llama.cpp-per-layer-experts/blob/per-layer-experts/docs/moe-ssd-streaming.md) for llama.cpp, which this project already builds on for SSD streaming, has `LLAMA_MOE_CACHE_GPU_KEEPALIVE`: a dummy kernel on a private command queue while missed experts are read. The switch was documented on 24 October 2026. On an M4 Pro it reports gains from 9% to 77% depending on cache size, the GPU clock rising from about 580 to 1,580 MHz at 4,096 MiB, and the energy per token at that size rising about five times with it and its direct-ids switch together.
+- [Mference PR 48](https://github.com/NeelM0906/Mference/pull/48) keeps the GPU clocked up between short decode command buffers with a one-SIMD-group spin on a second queue, stopping shortly after the last token.
+- [Mference PR 54](https://github.com/NeelM0906/Mference/pull/54) turned that filler off on M1-series GPUs: on an M1 Max, decode fell from about 35 to about 3 tok/s with it. On the M1 Pro used here the load helped. The two cases differ in software, workload and chip, and we have not tested why. Do not assume it helps on every Mac.
+
+What this note adds is a measurement on an M1 Pro with Inkling 2 Mini, and a per-command-buffer breakdown of one decode.
+
 ## Where the time went
 
 An instrumented copy of the banded build logged every Metal command buffer during decode. Per generated token, without any change:
