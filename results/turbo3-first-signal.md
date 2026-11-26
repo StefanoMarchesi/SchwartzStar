@@ -2,6 +2,8 @@
 
 Apple M1 Pro, 16 GB, 26 November 2026. This is a short screening test, not a quality result.
 
+Later the same day turbo3 was ported to the banded build and tested on Metal: see [turbo3 on Metal](turbo3-metal.md).
+
 **Correction, same day.** An earlier version said turbo3 with `q4_0` keys ran on the Metal flash attention path. That was wrong. In that tree Metal accepts different key and value types only for turbo with turbo or `q8_0` with turbo. For `q4_0`/`f16`, `q4_0`/`q8_0` and `q4_0`/`turbo3` the attention fell back to the CPU: those runs had 194 graph splits instead of 98 and a larger CPU compute buffer. The only turbo3 run on Metal here is `q8_0`/`turbo3`.
 
 ## Setup
