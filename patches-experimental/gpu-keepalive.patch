@@ -1,0 +1,156 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-context.m b/ggml/src/ggml-metal/ggml-metal-context.m
+index e12c55a..011d023 100644
+--- a/ggml/src/ggml-metal/ggml-metal-context.m
++++ b/ggml/src/ggml-metal/ggml-metal-context.m
+@@ -12,6 +12,8 @@
+ 
+ #import <Metal/Metal.h>
+ 
++#include <stdatomic.h>
++
+ #undef MIN
+ #undef MAX
+ #define MIN(a, b) ((a) < (b) ? (a) : (b))
+@@ -251,11 +253,133 @@ const char * ggml_metal_get_name(ggml_metal_t ctx) {
+     return ctx->name;
+ }
+ 
++// Optional keep-alive, off by default. With GGML_METAL_KEEPALIVE=<loop iterations> a thread runs short compute
++// buffers of one 32-thread SIMD-group while graphs keep arriving, so that the GPU does not slow down in the short
++// pauses between them. After GGML_METAL_KEEPALIVE_HOLD_MS (default 200) without activity the thread sleeps.
++static struct {
++    bool                 enabled;
++    bool                 trace;
++    uint32_t             iterations;
++    uint64_t             hold_ns;
++    atomic_uint_fast64_t last_ns;
++    atomic_bool          parked;
++    dispatch_semaphore_t wake;
++} g_keepalive;
++
++static void ggml_metal_keepalive_run(id<MTLDevice> device) {
++    NSString * source = @"#include <metal_stdlib>\n"
++        "using namespace metal;\n"
++        "kernel void spin(device float * out [[buffer(0)]], constant uint & n [[buffer(1)]], uint i [[thread_position_in_grid]]) {\n"
++        "    float x = float(i) + 1.0f;\n"
++        "    for (uint k = 0; k < n; ++k) { x = fma(x, 0.9999f, 0.5f); }\n"
++        "    out[i] = x;\n"
++        "}\n";
++
++    NSError * error = nil;
++    id<MTLLibrary> library = [device newLibraryWithSource:source options:nil error:&error];
++    id<MTLFunction> function = [library newFunctionWithName:@"spin"];
++    id<MTLComputePipelineState> pipeline = function ? [device newComputePipelineStateWithFunction:function error:&error] : nil;
++    id<MTLCommandQueue> queue = [device newCommandQueue];
++    id<MTLBuffer> out = [device newBufferWithLength:32*sizeof(float) options:MTLResourceStorageModeShared];
++
++    if (!pipeline || !queue || !out) {
++        GGML_LOG_ERROR("%s: unable to set up the GPU keep-alive: %s\n", __func__,
++                error ? [[error localizedDescription] UTF8String] : "allocation failed");
++        return;
++    }
++
++    id<MTLCommandBuffer> previous = nil;
++    uint64_t n_buffers = 0;
++
++    while (true) {
++        @autoreleasepool {
++            if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) > atomic_load(&g_keepalive.last_ns) + g_keepalive.hold_ns) {
++                if (previous) {
++                    [previous waitUntilCompleted];
++                    [previous release];
++                    previous = nil;
++                }
++                if (g_keepalive.trace) {
++                    GGML_LOG_WARN("%s: GPU keep-alive parked, buffers so far = %llu\n", __func__, (unsigned long long) n_buffers);
++                }
++                // set parked before reading last_ns again: either this thread sees the new activity or the
++                // thread that reports it sees parked and signals
++                atomic_store(&g_keepalive.parked, true);
++                if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) > atomic_load(&g_keepalive.last_ns) + g_keepalive.hold_ns) {
++                    dispatch_semaphore_wait(g_keepalive.wake, DISPATCH_TIME_FOREVER);
++                }
++                atomic_store(&g_keepalive.parked, false);
++                continue;
++            }
++
++            id<MTLCommandBuffer> cmd_buf = [queue commandBuffer];
++            id<MTLComputeCommandEncoder> encoder = [cmd_buf computeCommandEncoder];
++            [encoder setComputePipelineState:pipeline];
++            [encoder setBuffer:out offset:0 atIndex:0];
++            [encoder setBytes:&g_keepalive.iterations length:sizeof(g_keepalive.iterations) atIndex:1];
++            [encoder dispatchThreads:MTLSizeMake(32, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
++            [encoder endEncoding];
++            [cmd_buf commit];
++            [cmd_buf retain];
++            n_buffers++;
++
++            // at most two buffers in flight
++            if (previous) {
++                [previous waitUntilCompleted];
++                const bool failed = [previous status] == MTLCommandBufferStatusError;
++                [previous release];
++                if (failed) {
++                    GGML_LOG_ERROR("%s: GPU keep-alive stopped after a failed command buffer\n", __func__);
++                    [cmd_buf release];
++                    return;
++                }
++            }
++            previous = cmd_buf;
++        }
++    }
++}
++
++// report GPU activity of the Metal backend, starting the keep-alive thread on the first call if it is enabled
++static void ggml_metal_keepalive_touch(id<MTLDevice> device) {
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        const char * value = getenv("GGML_METAL_KEEPALIVE");
++        const int iterations = value ? atoi(value) : 0;
++        if (iterations <= 0) {
++            return;
++        }
++        const char * hold = getenv("GGML_METAL_KEEPALIVE_HOLD_MS");
++        g_keepalive.iterations = (uint32_t) MIN(iterations, 1000000);
++        g_keepalive.hold_ns    = (uint64_t) MAX(1, hold ? atoi(hold) : 200)*1000000;
++        g_keepalive.trace      = getenv("GGML_METAL_KEEPALIVE_TRACE") != NULL;
++        g_keepalive.wake       = dispatch_semaphore_create(0);
++        g_keepalive.enabled    = true;
++        atomic_store(&g_keepalive.last_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
++
++        GGML_LOG_WARN("%s: GPU keep-alive enabled, iterations = %u, hold = %llu ms (uses extra power while computing)\n",
++                "ggml_metal_keepalive_touch", g_keepalive.iterations, (unsigned long long) (g_keepalive.hold_ns/1000000));
++
++        [device retain];
++        dispatch_queue_t queue = dispatch_queue_create("ggml-metal-keepalive",
++                dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
++        dispatch_async(queue, ^{ ggml_metal_keepalive_run(device); });
++    });
++
++    if (g_keepalive.enabled) {
++        atomic_store(&g_keepalive.last_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
++        if (atomic_exchange(&g_keepalive.parked, false)) {
++            dispatch_semaphore_signal(g_keepalive.wake);
++        }
++    }
++}
++
+ void ggml_metal_synchronize(ggml_metal_t ctx) {
+     // wait for any backend operations to finish
+     if (ctx->cmd_buf_last) {
+         [ctx->cmd_buf_last waitUntilCompleted];
+         ctx->cmd_buf_last = nil;
++        // count the hold time from the end of the work, not only from its submission
++        ggml_metal_keepalive_touch(ggml_metal_device_get_obj(ctx->dev));
+     }
+ 
+     // check status of all command buffers
+@@ -481,6 +605,8 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
+         return GGML_STATUS_SUCCESS;
+     }
+ 
++    ggml_metal_keepalive_touch(ggml_metal_device_get_obj(ctx->dev));
++
+     // number of nodes encoded by the main thread (empirically determined)
+     const int n_main = MAX(64, 0.1*gf->n_nodes);
+ 

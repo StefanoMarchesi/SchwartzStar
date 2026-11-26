@@ -2,7 +2,25 @@
 
 Apple M1 Pro, 16 GB, 26 November 2026. Experimental: nothing in `build.sh` or `serve.sh` uses it.
 
-## Result
+## Latest: built into the server, longer runs
+
+26 November 2026, later the same day. `patches-experimental/gpu-keepalive.patch` moves the load into the Metal backend (banded build sources). It is off by default, runs only with `GGML_METAL_KEEPALIVE=20000` (loop iterations per buffer), and parks after 200 ms without GPU work (`GGML_METAL_KEEPALIVE_HOLD_MS`). After a generation, an idle server used 0.8% to 2% CPU with it on, and its trace showed the thread parked.
+
+About 1,900 prompt tokens, one prompt, **1,792 generated tokens** per run, 4,096 context, microbatch 256, K and V `q4_0`, 3,072 MiB expert cache for SSD streaming. Each run is a new server. SSD runs went off, on, on, off, on, off, off, on; this order and the comparison of adjacent pairs were fixed before the run. Two resident runs were interleaved (a third, and two planned runs with a lighter load, were not run).
+
+| Setup | Decode tok/s, mean | Range | Prefill tok/s | Mac power, W | Joules per token |
+| --- | ---: | --- | --- | ---: | ---: |
+| Resident weights (2 runs) | 14.94 | 14.80 to 15.08 | 118, 132 | 52.2 | 3.50 |
+| SSD streaming (4 runs) | 6.22 | 5.86 to 6.65 | 37 to 85 | 30.7 | 4.95 |
+| SSD streaming, GPU kept busy (4 runs) | 8.18 | 7.59 to 8.52 | 71 to 84 | 34.5 | 4.24 |
+
+- The four pairs gained **+28%, +37%, +24% and +38%** (median +32%). Decode with SSD streaming went from 2.4 to 1.8 times slower than resident weights.
+- **All ten runs produced the same 1,792 tokens and log-probabilities**, resident or streamed, with the load on or off (one prompt).
+- Power is whole-machine input power from the Mac's battery controller, on mains with a full battery. It includes the display and other apps, and each run has only 1 to 4 one-minute averages. Energy per token with the load on divided by off was 0.87, 0.70, 1.11 and 0.81 across the pairs. No clear energy cost per token appeared; the data are too noisy to claim a saving. Schiltmans measured a large cost at a small cache on an M4 Pro with another power meter, see [prior work](#prior-work).
+- The gain is smaller than in the earlier series below (+47% to +142%), which used 128 generated tokens, the unmodified server and the separate helper. SSD streaming without the load was also faster here. The cause of the difference was not isolated.
+- The Mac was also used for light browser work during part of the series.
+
+## First result, with the separate helper
 
 Running a small separate GPU load next to the server made SSD-streaming decode **47% to 142% faster** in four pairs of runs (median 71%), with identical output. The load uses power for as long as it runs. Power and temperature were not measured.
 
