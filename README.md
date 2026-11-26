@@ -73,6 +73,7 @@ It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert c
 - With the same banded binary and settings at 4,096 positions, SSD streaming and resident weights produced identical tokens, top-5 order and log-probabilities over 3 prompts of about 1,900 tokens (192 generated steps). This does not cover longer contexts.
 - In that short test resident weights were faster (prefill 116 to 132 tok/s and decode 15.3 to 15.5 tok/s, against 63 to 80 and 4.4 to 6.4 with SSD streaming) but left less free memory (lowest sample 11%, against 21 to 33%). Resident mode was not tested with a long context.
 - [Where SSD streaming loses time](results/ssd-gap.md) against resident weights, with the experiments that did not help yet.
+- [Turbo3 value cache, a first signal](results/turbo3-first-signal.md) on short prompts, in an experimental tree outside this repository.
 
 ## Measurements on a 16 GB M1 Pro
 
