@@ -4,26 +4,34 @@ cd "$(dirname "$0")"
 
 profile="${1:-quality}"
 reasoning_default=0
+flash=off
+cache_k=f16
+cache_v=f16
+build_default="$PWD/build"
 case "$profile" in
+    long)     file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=32768; batch=256; cache=3072
+              flash=on; cache_k=q4_0; cache_v=q4_0; build_default="$PWD/build/banded" ;;
     coding)   file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=8192; batch=512; cache=3072; reasoning_default=128 ;;
     resident) file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=2048; batch=16; cache=0 ;;
     minimum)  file=Inkling-2-Mini-UD-IQ1_S.gguf;   ctx=1024; batch=1; cache=512 ;;
     quality)  file=Inkling-2-Mini-IQ4_NL.gguf;     ctx=1024; batch=2; cache=768 ;;
-    *) echo 'Usage: ./serve.sh [coding|quality|minimum|resident] [model.gguf]' >&2; exit 2 ;;
+    *) echo 'Usage: ./serve.sh [coding|long|quality|minimum|resident] [model.gguf]' >&2; exit 2 ;;
 esac
 if (( $# > 2 )); then
-    echo 'Usage: ./serve.sh [coding|quality|minimum|resident] [model.gguf]' >&2
+    echo 'Usage: ./serve.sh [coding|long|quality|minimum|resident] [model.gguf]' >&2
     exit 2
 fi
 
-bin="${INKLING_SERVER:-${INKLING_BUILD_DIR:-$PWD/build}/bin/llama-server}"
+bin="${INKLING_SERVER:-${INKLING_BUILD_DIR:-$build_default}/bin/llama-server}"
 model="${2:-$PWD/models/$file}"
 ctx="${INKLING_CTX:-$ctx}"
 batch="${INKLING_BATCH:-$batch}"
 cache="${INKLING_CACHE_MIB:-$cache}"
 port="${INKLING_PORT:-8080}"
 threads="${INKLING_THREADS:-4}"
-cache_type_k="${INKLING_CACHE_TYPE_K:-f16}"
+cache_type_k="${INKLING_CACHE_TYPE_K:-$cache_k}"
+cache_type_v="${INKLING_CACHE_TYPE_V:-$cache_v}"
+flash_attn="${INKLING_FLASH_ATTN:-$flash}"
 checkpoints="${INKLING_CTX_CHECKPOINTS:-2}"
 read_cache="${INKLING_SSD_READ_CACHE:-0}"
 reasoning_budget="${INKLING_REASONING_BUDGET:-$reasoning_default}"
@@ -34,6 +42,14 @@ for number in "$ctx" "$batch" "$cache" "$port" "$threads" "$checkpoints"; do
 done
 if (( ctx < 32 || batch < 1 || batch > ctx || port < 1 || port > 65535 || threads < 1 )); then
     echo 'Check the context, microbatch, port, and thread count.' >&2
+    exit 2
+fi
+if [[ "$flash_attn" != on && "$flash_attn" != off ]]; then
+    echo 'INKLING_FLASH_ATTN must be on or off.' >&2
+    exit 2
+fi
+if [[ "$flash_attn" == off && "$cache_type_v" != f16 && "$cache_type_v" != f32 ]]; then
+    echo 'A quantized value cache requires INKLING_FLASH_ATTN=on.' >&2
     exit 2
 fi
 if [[ "$read_cache" != 0 && "$read_cache" != 1 ]]; then
@@ -81,6 +97,6 @@ exec "$bin" --model "$model" --alias inkling-2-mini --host 127.0.0.1 --port "$po
     --ctx-size "$ctx" --batch-size "$logical_batch" --ubatch-size "$batch" --threads "$threads" \
     --parallel 1 --no-warmup --cache-ram 0 --no-cache-idle-slots --no-ui --cors-origins "http://127.0.0.1:$port,http://localhost:$port" \
     --ctx-checkpoints "$checkpoints" \
-    --flash-attn off --cache-type-k "$cache_type_k" --cache-type-v f16 \
+    --flash-attn "$flash_attn" --cache-type-k "$cache_type_k" --cache-type-v "$cache_type_v" \
     --verbosity 4 --reasoning "$reasoning" --reasoning-effort "$reasoning_effort" --reasoning-budget "$reasoning_budget" \
     ${extra[@]+"${extra[@]}"}

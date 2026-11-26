@@ -54,6 +54,24 @@ To connect a coding client, see the [mini-SWE-agent setup](docs/mini-swe-agent.m
 
 An experimental [single-task DeepSWE runner](tools/deepswe-pilot/README.md) is available for a local server and Pier. Its workflow has passed a simulated end-to-end preflight; a real DeepSWE model score is not yet available. An [interrupted SuperJSON pilot](results/deepswe-pilot.md) records context and memory without claiming a reward.
 
+## Experimental long-context build
+
+The `long` profile runs Inkling 2 Mini IQ2 with a 32,768-position context. It needs a second build based on [Unsloth llama.cpp PR 431](https://github.com/unslothai/llama.cpp/pull/431) (Metal banded attention, not merged upstream), with the same SSD patches and one NVFP4 patch in `patches-banded/`.
+
+```bash
+INKLING_VARIANT=banded ./build.sh
+MODEL=$(./download.sh iq2)
+./serve.sh long "$MODEL"
+```
+
+It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert cache and microbatch 256. Treat it as a beta. [Measurements and method](results/banded-long-context.md)
+
+- On a 16 GB M1 Pro, two runs of one 31,883-token prompt both returned 8 of 8 planted codes. Prompt processing took 568 to 644 s, decode ran at 2.9 to 5.6 tok/s and the peak process footprint was 3,611 to 3,722 MiB.
+- The banded build was compiled with `build.sh` from a local copy of the pinned commit. Fetching that commit from GitHub through `build.sh` has not been tested yet.
+- The prompt cache is reused when a turn only appends to the conversation. In a 16K test an appended turn took 4.6 s, while a changed question near the end reprocessed the whole prompt (253 s). Clients that rewrite or compact history will wait minutes.
+- Recall tests are synthetic and did not separate cache formats: every tested format passed. The coding check is one small two-turn PHP task. Quality on real code and agent work is not established.
+- Output was not compared between SSD streaming and resident weights.
+
 ## Measurements on a 16 GB M1 Pro
 
 | Model and configuration | Input / context | Prefill | Decode | First text | Peak process footprint |

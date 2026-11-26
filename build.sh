@@ -2,10 +2,26 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-revision=ae6a7ad2c5754dd8db93d04c84fda70435864f6e
-remote=https://github.com/ggml-org/llama.cpp.git
-source_dir="${INKLING_SOURCE_DIR:-$PWD/.llama.cpp}"
-build_dir="${INKLING_BUILD_DIR:-$PWD/build}"
+# "banded" is experimental: Unsloth's Metal banded attention (PR 431) plus the same patches.
+variant="${INKLING_VARIANT:-stable}"
+patches=("$PWD"/patches/*.patch)
+case "$variant" in
+    stable)
+        revision=ae6a7ad2c5754dd8db93d04c84fda70435864f6e
+        remote=https://github.com/ggml-org/llama.cpp.git
+        default_source="$PWD/.llama.cpp"
+        default_build="$PWD/build" ;;
+    banded)
+        revision=09df2193f242c5b578265fafda55d118e2cc1730
+        remote=https://github.com/unslothai/llama.cpp.git
+        default_source="$PWD/.llama.cpp-banded"
+        default_build="$PWD/build/banded"
+        patches+=("$PWD"/patches-banded/*.patch) ;;
+    *) echo 'INKLING_VARIANT must be stable or banded.' >&2; exit 2 ;;
+esac
+remote="${INKLING_REMOTE:-$remote}"
+source_dir="${INKLING_SOURCE_DIR:-$default_source}"
+build_dir="${INKLING_BUILD_DIR:-$default_build}"
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) metal=ON ;;
     Linux/*) metal=OFF ;;
@@ -30,7 +46,7 @@ rm "$patch_index"
 trap 'rm -f "$patch_index" "$patch_index.lock"' EXIT
 export LC_ALL=C
 GIT_INDEX_FILE="$patch_index" git -C "$source_dir" read-tree HEAD
-for patch in "$PWD"/patches/*.patch; do
+for patch in "${patches[@]}"; do
     GIT_INDEX_FILE="$patch_index" git -C "$source_dir" apply --cached "$patch"
 done
 expected=$(GIT_INDEX_FILE="$patch_index" git -C "$source_dir" write-tree)

@@ -1,5 +1,6 @@
 # llama.cpp sources cloned by build.sh
 .llama.cpp/
+.llama.cpp-banded/
 
 # GGUF weights and local model staging
 models
