@@ -67,3 +67,5 @@ A temporary scheduler probe then cut each resident graph split into pieces of 23
 GPU busy time rose with fragmentation and rose further as the pauses grew. This reproduces the SSD effect without any SSD read: the GPU does the same work more slowly when it arrives in small pieces with gaps. Lower GPU clocks during gaps would explain the second step; clock speed was not measured. One run per row. The first normal run was stopped by the swap guard, and the normal row is the repeat at the end of the series.
 
 This points at the pauses and the number of command buffers as the target for faster SSD decode, rather than at the Metal kernels.
+
+A first change in this direction, [writing the slot map without a GPU copy](direct-slot-map.md), gave identical output and faster decode in small tests.

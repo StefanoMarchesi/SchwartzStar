@@ -1,0 +1,61 @@
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index e95b5c3..28eccb5 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -344,6 +344,16 @@ static bool llama_moe_cache_is_host_weight(const ggml_tensor * t) {
+         ggml_backend_buffer_is_host(t->buffer);
+ }
+ 
++// a tensor on a shared Metal buffer: tensor->data is a CPU address of the same memory the GPU reads
++static bool llama_moe_cache_is_cpu_writable(const ggml_tensor * t) {
++#if defined(__APPLE__) && defined(GGML_USE_METAL)
++    return t->data != nullptr && ggml_backend_metal_buffer_is_shared(t->buffer);
++#else
++    GGML_UNUSED(t);
++    return false;
++#endif
++}
++
+ }
+ 
+ struct llama_moe_cache::impl {
+@@ -406,6 +416,8 @@ struct llama_moe_cache::impl {
+     };
+ 
+     std::shared_ptr<const llama_expert_stream> stream;
++    // LLAMA_INKLING_SSD_DIRECT=1 with the stream: the slot map is written with memcpy, see copy()
++    bool direct_slots = false;
+     std::vector<read_job> reads;
+     size_t disk_reads = 0;
+     size_t disk_bytes = 0;
+@@ -487,6 +499,9 @@ struct llama_moe_cache::impl {
+         if (const char * v = getenv("LLAMA_MOE_CACHE_DEDUP"); v != nullptr && *v != '\0') {
+             dedup = std::clamp(atoi(v), 0, 2);
+         }
++        if (const char * v = getenv("LLAMA_INKLING_SSD_DIRECT"); v != nullptr && *v == '1') {
++            direct_slots = stream != nullptr;
++        }
+         if (stream) {
+             // Metal reports every buffer type as device memory, but on Apple Silicon its default
+             // allocation is shared with the CPU, which is what the pread writes into the banks need.
+@@ -1107,7 +1122,19 @@ struct llama_moe_cache::impl {
+         // synchronizes before plan() changes it, so this upload has completed before the data changes)
+         // relies on ggml_backend_synchronize above (ids read-back) completing the previous slot map upload
+         // of the key layer before plan() changes its data; a pageable-memory H2D copy may also be staged at once
+-        ggml_backend_tensor_set_async(backend, dst, g.lru.slot_map[il], 0, ggml_nbytes(l.slot_map));
++        if (direct_slots && llama_moe_cache_is_cpu_writable(dst)) {
++            // ids read-back above drained the queue (get_async is the last blit), so no GPU work reads dst;
++            // the GPU work encoded after this returns is committed later and sees the CPU write
++            GGML_ASSERT(ggml_nbytes(dst) >= ggml_nbytes(l.slot_map));
++            memcpy(dst->data, g.lru.slot_map[il], ggml_nbytes(l.slot_map));
++            static bool logged = false;
++            if (!logged) {
++                logged = true;
++                LLAMA_LOG_INFO("%s: writing the slot map directly to shared memory\n", __func__);
++            }
++        } else {
++            ggml_backend_tensor_set_async(backend, dst, g.lru.slot_map[il], 0, ggml_nbytes(l.slot_map));
++        }
+ 
+         return true;
+     }
