@@ -70,7 +70,8 @@ It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert c
 - The banded build was compiled with `build.sh` from a local copy of the pinned commit. Fetching that commit from GitHub through `build.sh` has not been tested yet.
 - The prompt cache is reused when a turn only appends to the conversation. In a 16K test an appended turn took 4.6 s, while a changed question near the end reprocessed the whole prompt (253 s). Clients that rewrite or compact history will wait minutes.
 - Recall tests are synthetic and did not separate cache formats: every tested format passed. The coding check is one small two-turn PHP task. Quality on real code and agent work is not established.
-- Output was not compared between SSD streaming and resident weights.
+- With the same banded binary and settings at 4,096 positions, SSD streaming and resident weights produced identical tokens, top-5 order and log-probabilities over 3 prompts of about 1,900 tokens (192 generated steps). This does not cover longer contexts.
+- In that short test resident weights were faster (prefill 116 to 132 tok/s and decode 15.3 to 15.5 tok/s, against 63 to 80 and 4.4 to 6.4 with SSD streaming) but left less free memory (lowest sample 11%, against 21 to 33%). Resident mode was not tested with a long context.
 
 ## Measurements on a 16 GB M1 Pro
 

@@ -52,3 +52,20 @@ At 16,384 positions with two checkpoints, an appended turn reused 15,922 tokens 
 `INKLING_VARIANT=banded ./build.sh` on a clean checkout, then `./serve.sh long`, then the 31,883-token recall prompt: 8 of 8 codes, prompt 568.1 s (56.1 tok/s), decode 2.90 tok/s, peak footprint 3,722 MiB, same token IDs as the earlier run. The checkout was cloned from a local git bundle, so the network fetch in `build.sh` was not exercised.
 
 Log-probabilities differed from the earlier run by up to 0.149 (4 of 92 steps above 0.01). Two 8K runs separate the causes. With zero checkpoints, the `build.sh` binary matched the old binary exactly. With the same binary, two checkpoints against zero kept the same token IDs but moved log-probabilities by up to 0.46. Checkpoints split the prompt into different microbatches, so results with and without them are not bit-identical.
+
+## SSD streaming against resident weights
+
+Same `build.sh` binary, flash attention on, `q4_0` keys and values, 4,096 positions, microbatch 256, no checkpoints, greedy. Three prompts of 1,887 to 1,898 tokens, 64 generated tokens each. Order: SSD, resident, SSD. The resident log shows no expert streaming and 7,847 MiB of model memory on Metal.
+
+| Comparison | Identical tokens | Same top-5 order | Largest log-probability difference |
+| --- | ---: | ---: | ---: |
+| SSD against SSD | 192/192 | 192/192 | 0.0 |
+| SSD against resident | 192/192 | 192/192 | 0.0 |
+
+| Run | Prefill tok/s | Decode tok/s | Swap growth, peak sample MB | Lowest free memory sample |
+| --- | ---: | ---: | ---: | ---: |
+| SSD, first | 63.4-73.5 | 4.39-4.60 | 1563 | 21% |
+| Resident | 116.3-132.2 | 15.26-15.54 | 2383 | 11% |
+| SSD, second | 77.1-79.8 | 4.73-6.37 | -24 | 33% |
+
+Memory samples come from `sysctl vm.swapusage` and `memory_pressure -Q` every five seconds, with the usual applications open, so other processes affect them. The process footprint was 3,293 MiB with SSD streaming and 295 MiB with resident weights. The second figure leaves out the file-mapped model memory, so the footprint cannot compare the two modes. This also limits what the footprint figures above say about total memory use. Resident mode was not tested with a long context.
