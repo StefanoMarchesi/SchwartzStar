@@ -58,7 +58,7 @@ Here the ranges overlap. All four runs recalled 8/8 planted codes with identical
 
 In the first series at about 1,900 tokens, prompt processing was also slower in the runs with the direct write off. Together with the difference in memory pressure, this suggests that machine conditions produced most of that gap. In the longer series prompt processing matched between settings and the decode gap mostly disappeared.
 
-The patch stays here as an experiment: it does not change the output, but it is not shown to be faster. Command buffers and GPU busy time were not measured with it. It removes only one of the small GPU submissions per MoE layer; the read-back of the expert ids and the uploads of missing experts remain. Not tested: the public non-banded build, other hardware, and starting through `serve.sh`.
+The patch stays here as an experiment: it does not change the output, but it is not shown to be faster. A [later trace](gpu-keepwarm.md) showed that it removes the 47 slot-map copies per token, while the 48 read-backs of expert ids and the model computation remain. Missing experts are not a GPU upload with SSD streaming: they are read straight into shared memory. An earlier version of this note said otherwise. The copies used little GPU time, and the CPU work around them did not get shorter. Not tested: the public non-banded build, other hardware, and starting through `serve.sh`.
 
 ## Trying it
 

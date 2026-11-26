@@ -69,3 +69,5 @@ GPU busy time rose with fragmentation and rose further as the pauses grew. This 
 This points at the pauses and the number of command buffers as the target for faster SSD decode, rather than at the Metal kernels.
 
 A first change in this direction, [writing the slot map without a GPU copy](direct-slot-map.md), gave identical output but no reliable speed gain in a longer series.
+
+Keeping the GPU busy during those pauses with a [small separate load](gpu-keepwarm.md) brought GPU time back to about the resident figure and made decode faster.
