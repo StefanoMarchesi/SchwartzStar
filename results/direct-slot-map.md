@@ -10,7 +10,27 @@ Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh`.
 
 The write follows the read-back of the ids, which waits for the queued GPU work, and the work that reads the slot map is submitted after it. A separate AI review of the code, with nothing built or run, found no race. It could not verify from this code Apple's guarantees about when CPU writes to shared memory become visible and about the completion order of command buffers.
 
-## Results
+## Summary
+
+**No reliable speed gain.** Two first small series showed decode 12% to 30% faster, and this note first reported that. A longer series run afterwards, with steadier memory conditions, did not confirm it. Output was identical in every run.
+
+## Longer series
+
+About 1,900 prompt tokens, 128 generated, 4,096 context, microbatch 256, three prompts per server, eight servers in the order off, on, on, off, on, off, off, on. The order and the comparison of the four adjacent pairs were fixed before the run. Speeds are total generated tokens over total decode time for each server.
+
+| Pair | Direct write off, tok/s | On, tok/s | Change |
+| --- | ---: | ---: | ---: |
+| 1 | 4.80 | 5.13 | +7.0% |
+| 2 | 3.85 | 4.61 | +19.6% |
+| 3 | 5.85 | 4.88 | -16.6% |
+| 4 | 5.89 | 6.28 | +6.6% |
+| Mean of 4 servers | 5.10 | 5.22 | +2% |
+
+The median of the pair changes was +6.8%. The ranges overlap almost entirely (3.85 to 5.89 off, 4.61 to 6.28 on), and two servers with the same setting differed by up to about 50%. Prompt processing averaged 75.2 tok/s off and 75.4 on. Swap grew by at most 0.6 GB in any server, and lowest free memory was 22% to 32%. All eight servers produced the same tokens and log-probabilities on all three prompts (384 tokens per server). Peak footprint did not change.
+
+A small gain cannot be ruled out, but this test cannot separate it from the variation between repeats.
+
+## First series
 
 Same binary for both settings, greedy, K and V `q4_0`, 3,072 MiB expert cache. On and off ran in mirrored order.
 
@@ -36,7 +56,9 @@ Here the ranges overlap. All four runs recalled 8/8 planted codes with identical
 
 ## Reading
 
-Decode was faster with the direct write in both series: about 30% in the first and 12% in the second. The sample is small and decode speed on this machine varies a lot between repeats, even between sessions with the same settings, so the size of the gain is uncertain. Command buffers and GPU busy time were not measured with the patch, so it is not shown that fewer small command buffers are the reason. Not tested: the public non-banded build, longer generations, other hardware, and starting through `serve.sh`.
+In the first series at about 1,900 tokens, prompt processing was also slower in the runs with the direct write off. Together with the difference in memory pressure, this suggests that machine conditions produced most of that gap. In the longer series prompt processing matched between settings and the decode gap mostly disappeared.
+
+The patch stays here as an experiment: it does not change the output, but it is not shown to be faster. Command buffers and GPU busy time were not measured with it. It removes only one of the small GPU submissions per MoE layer; the read-back of the expert ids and the uploads of missing experts remain. Not tested: the public non-banded build, other hardware, and starting through `serve.sh`.
 
 ## Trying it
 
