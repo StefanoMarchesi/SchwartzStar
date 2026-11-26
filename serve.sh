@@ -7,10 +7,11 @@ reasoning_default=0
 flash=off
 cache_k=f16
 cache_v=f16
+checkpoint_default=2
 build_default="$PWD/build"
 case "$profile" in
     long)     file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=32768; batch=256; cache=3072
-              flash=on; cache_k=q4_0; cache_v=q4_0; build_default="$PWD/build/banded" ;;
+              flash=on; cache_k=q4_0; cache_v=q4_0; checkpoint_default=8; build_default="$PWD/build/banded" ;;
     coding)   file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=8192; batch=512; cache=3072; reasoning_default=128 ;;
     resident) file=Inkling-2-Mini-UD-IQ2_XXS.gguf; ctx=2048; batch=16; cache=0 ;;
     minimum)  file=Inkling-2-Mini-UD-IQ1_S.gguf;   ctx=1024; batch=1; cache=512 ;;
@@ -32,7 +33,7 @@ threads="${INKLING_THREADS:-4}"
 cache_type_k="${INKLING_CACHE_TYPE_K:-$cache_k}"
 cache_type_v="${INKLING_CACHE_TYPE_V:-$cache_v}"
 flash_attn="${INKLING_FLASH_ATTN:-$flash}"
-checkpoints="${INKLING_CTX_CHECKPOINTS:-2}"
+checkpoints="${INKLING_CTX_CHECKPOINTS:-$checkpoint_default}"
 read_cache="${INKLING_SSD_READ_CACHE:-0}"
 reasoning_budget="${INKLING_REASONING_BUDGET:-$reasoning_default}"
 gpu=all

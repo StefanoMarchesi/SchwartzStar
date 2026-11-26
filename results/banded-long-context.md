@@ -73,3 +73,19 @@ Memory samples come from `sysctl vm.swapusage` and `memory_pressure -Q` every fi
 ## Fresh install
 
 26 November 2026: new clone of this repository at `ef09734`, then `INKLING_VARIANT=banded ./build.sh` with no local overrides. The script fetched commit `09df2193f242c5b578265fafda55d118e2cc1730` from GitHub as a shallow clone (about 40 MB of Git data). The patched tree hash was `f30d2e992e9e5f9b2cc319c9cbd83ad83c0347d8` and the build took 107 s. `./serve.sh long` from the clone, with an already downloaded GGUF, returned 8 of 8 codes on the 7,895-token prompt. Token IDs and log-probabilities matched the earlier run with the same two checkpoints (largest difference 0.0). The model download was not repeated.
+
+## Chat prompt cache and checkpoints
+
+`/v1/chat/completions`, `q4_0`/`q4_0`, 16,384 positions, microbatch 512, expert cache 3072 MiB, a first user message of about 7,900 tokens. A checkpoint takes 48.7 MiB, so eight take up to about 390 MiB of host memory.
+
+A first run without answer checking compared two and eight checkpoints. Appending a turn and replacing the last user message reused almost the whole prompt with both limits (4.5 to 5.8 s). Rewriting the end of the first message reused nothing with two checkpoints (109.7 s) and 7,367 tokens with eight (11.3 s): the checkpoint before the end of the first message is dropped when only two are kept.
+
+A second run with eight checkpoints prefilled the start of each answer, because the model otherwise opened empty reasoning blocks without answering. Every case was then repeated with the cache turned off.
+
+| Change | Tokens reused | With cache s | Without cache s | Same tokens | Largest log-probability difference |
+| --- | ---: | ---: | ---: | --- | ---: |
+| append a turn | 7372 | 13.0 | 103.8 | yes | 0.021 |
+| replace the last user message | 7887 | 3.7 | 108.9 | yes | 0.281 |
+| rewrite the end of the first message | 7399 | 8.8 | 171.8 | yes | 0.005 |
+
+In the second case the model returned the wrong code both with and without the cache. One run per case; this does not measure answer quality.

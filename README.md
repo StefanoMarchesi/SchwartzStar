@@ -35,7 +35,7 @@ curl -fsS http://127.0.0.1:8080/v1/chat/completions \
 | `minimum` | Unsloth UD-IQ1_S, 7.76 GB | 512 MiB SSD | 1,024 | 1 |
 | `resident` | Unsloth UD-IQ2_XXS, 8.49 GB | Resident weights | 2,048 | 16 |
 
-`INKLING_CTX`, `INKLING_BATCH`, `INKLING_CACHE_MIB`, `INKLING_THREADS`, and `INKLING_PORT` override the profile. `INKLING_CACHE_TYPE_K` defaults to `f16`. `q4_0` is an experimental option for the key cache. The value cache stays F16. The server reserves enough expert slots for each microbatch and reports the required cache size if the settings cannot fit. `INKLING_CTX_CHECKPOINTS` controls the number of in-memory prefix checkpoints and defaults to two.
+`INKLING_CTX`, `INKLING_BATCH`, `INKLING_CACHE_MIB`, `INKLING_THREADS`, and `INKLING_PORT` override the profile. `INKLING_CACHE_TYPE_K` defaults to `f16`. `q4_0` is an experimental option for the key cache. The value cache stays F16. The server reserves enough expert slots for each microbatch and reports the required cache size if the settings cannot fit. `INKLING_CTX_CHECKPOINTS` controls the number of in-memory prefix checkpoints and defaults to two (eight in the `long` profile).
 
 The default 8K context is suitable for short prompts, not established as sufficient for repository-scale agent tasks. In one SWE-bench Pro Hard pilot, a request reached 20,546 tokens and exceeded a 16,384-position limit before a patch was submitted. A 131,072-position configuration processed more than 22,000 tokens before the pilot was stopped, but neither run produced a score. Increasing the configured context also increases memory use; a large allocation alone does not demonstrate that a fully populated context is usable. [Pilot details](results/banded-ssd-pilot.md)
 
@@ -64,11 +64,11 @@ MODEL=$(./download.sh iq2)
 ./serve.sh long "$MODEL"
 ```
 
-It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert cache and microbatch 256. Treat it as a beta. [Measurements and method](results/banded-long-context.md)
+It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert cache, microbatch 256 and up to eight prefix checkpoints. Treat it as a beta. [Measurements and method](results/banded-long-context.md)
 
 - On a 16 GB M1 Pro, two runs of one 31,883-token prompt both returned 8 of 8 planted codes. Prompt processing took 568 to 644 s, decode ran at 2.9 to 5.6 tok/s and the peak process footprint was 3,611 to 3,722 MiB.
 - A fresh clone built with `INKLING_VARIANT=banded ./build.sh`, fetching the pinned commit from GitHub. In an 8K recall run, `./serve.sh long` from that clone matched the earlier token IDs and log-probabilities exactly.
-- The prompt cache is reused when a turn only appends to the conversation. In a 16K test an appended turn took 4.6 s, while a changed question near the end reprocessed the whole prompt (253 s). Clients that rewrite or compact history will wait minutes.
+- Through `/v1/chat/completions`, in a test with about 7,900 tokens and eight checkpoints, appending a turn, replacing the last user message and rewriting the end of the first message reused most of the prompt (13.0, 3.7 and 8.8 s against 104 to 172 s without the cache). Each reused answer had the same tokens as the uncached one. With two checkpoints the rewrite reused nothing. Checkpoints are made at user message boundaries and near the end of the prompt: a change before the oldest usable one reprocesses everything. In a raw `/completion` test with two checkpoints, a changed question near the end reused nothing.
 - Recall tests are synthetic and did not separate cache formats: every tested format passed. The coding check is one small two-turn PHP task. Quality on real code and agent work is not established.
 - With the same banded binary and settings at 4,096 positions, SSD streaming and resident weights produced identical tokens, top-5 order and log-probabilities over 3 prompts of about 1,900 tokens (192 generated steps). This does not cover longer contexts.
 - In that short test resident weights were faster (prefill 116 to 132 tok/s and decode 15.3 to 15.5 tok/s, against 63 to 80 and 4.4 to 6.4 with SSD streaming) but left less free memory (lowest sample 11%, against 21 to 33%). Resident mode was not tested with a long context.
