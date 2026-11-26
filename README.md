@@ -67,7 +67,7 @@ MODEL=$(./download.sh iq2)
 It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert cache and microbatch 256. Treat it as a beta. [Measurements and method](results/banded-long-context.md)
 
 - On a 16 GB M1 Pro, two runs of one 31,883-token prompt both returned 8 of 8 planted codes. Prompt processing took 568 to 644 s, decode ran at 2.9 to 5.6 tok/s and the peak process footprint was 3,611 to 3,722 MiB.
-- The banded build was compiled with `build.sh` from a local copy of the pinned commit. Fetching that commit from GitHub through `build.sh` has not been tested yet.
+- A fresh clone built with `INKLING_VARIANT=banded ./build.sh`, fetching the pinned commit from GitHub. In an 8K recall run, `./serve.sh long` from that clone matched the earlier token IDs and log-probabilities exactly.
 - The prompt cache is reused when a turn only appends to the conversation. In a 16K test an appended turn took 4.6 s, while a changed question near the end reprocessed the whole prompt (253 s). Clients that rewrite or compact history will wait minutes.
 - Recall tests are synthetic and did not separate cache formats: every tested format passed. The coding check is one small two-turn PHP task. Quality on real code and agent work is not established.
 - With the same banded binary and settings at 4,096 positions, SSD streaming and resident weights produced identical tokens, top-5 order and log-probabilities over 3 prompts of about 1,900 tokens (192 generated steps). This does not cover longer contexts.

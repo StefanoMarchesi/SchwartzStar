@@ -69,3 +69,7 @@ Same `build.sh` binary, flash attention on, `q4_0` keys and values, 4,096 positi
 | SSD, second | 77.1-79.8 | 4.73-6.37 | -24 | 33% |
 
 Memory samples come from `sysctl vm.swapusage` and `memory_pressure -Q` every five seconds, with the usual applications open, so other processes affect them. The process footprint was 3,293 MiB with SSD streaming and 295 MiB with resident weights. The second figure leaves out the file-mapped model memory, so the footprint cannot compare the two modes. This also limits what the footprint figures above say about total memory use. Resident mode was not tested with a long context.
+
+## Fresh install
+
+26 November 2026: new clone of this repository at `ef09734`, then `INKLING_VARIANT=banded ./build.sh` with no local overrides. The script fetched commit `09df2193f242c5b578265fafda55d118e2cc1730` from GitHub as a shallow clone (about 40 MB of Git data). The patched tree hash was `f30d2e992e9e5f9b2cc319c9cbd83ad83c0347d8` and the build took 107 s. `./serve.sh long` from the clone, with an already downloaded GGUF, returned 8 of 8 codes on the 7,895-token prompt. Token IDs and log-probabilities matched the earlier run with the same two checkpoints (largest difference 0.0). The model download was not repeated.
