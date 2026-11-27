@@ -2,6 +2,28 @@
 
 Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh` or any profile.
 
+## Update: a populated 256K prompt
+
+27 November 2026. One run: turbo3 values, K `q4_0`, 262,144 context, **microbatch 256** (chosen to save memory), 3,072 MiB expert cache, banded prompt processing, all the turbo3 patches below, 16 GB M1 Pro.
+
+| | Value |
+| --- | --- |
+| Prompt tokens | 260,996 |
+| Planted codes recalled | 8/8 |
+| Prefill | 39.6 tok/s, 1 h 50 min |
+| Decode, 92 tokens | 3.0 tok/s |
+| Peak process footprint | 5,523 MiB |
+| Swap growth, sampled every 15 s | up to 4.6 GB (4.4 GB at the end) |
+| Lowest free memory reported by macOS | 8% |
+| SSD reads in prefill | 1,312 s (20% of prefill), 4,557 GiB |
+| Expert cache hit rate in prefill / decode | 42.5% / 90.2% |
+
+- **It completed, but not comfortably.** Swap grew heavily and free memory was very low. The run stopped short of the 6 GB swap-growth limit set to abort it.
+- The machine was busy during part of this run: other AI agents, a 648 MB download, desktop apps, and an external disk that disconnected (the test files were on the internal drive). Speeds are not a clean measurement.
+- Reads per prompt token were about 17.9 MiB here against 11.0 MiB at 128K with microbatch 512. Fewer tokens share each selected expert in a smaller microbatch, and the context is longer; the two effects were not separated.
+- `q4_0` values were not run at 256K. At load they reserved about 1.4 GiB more than turbo3, but at 128K most of that difference did not show up in the peak.
+- Single synthetic recall run: it says nothing about coding or agent quality at this length.
+
 ## Update: faster turbo3 decode
 
 27 November 2026. A synthetic test showed one attention call with a single query over 131K cached positions taking 22.6 ms with turbo3 values against 4.9 ms with `q4_0`. `patches-experimental/turbo3-decode.patch`, applied after the three patches below, decodes turbo3 values without the table lookup (branchless selects) and gives the `q4_0`/turbo3 pair the same decode kernel tiling as `q4_0`. In the reviewer's own build the synthetic call fell to 5.7 ms (`q4_0` 4.8 ms). No extra memory is reserved. All the Metal tests listed below passed with the prefill switch at 1 and at 0. The first change keeps the same arithmetic; the new tiling changes the order of additions, so results can differ in the last bits.
