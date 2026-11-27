@@ -77,3 +77,5 @@ cmake --build build/direct --target llama-server --parallel 4
 ```bash
 LLAMA_INKLING_SSD_DIRECT=1 INKLING_SERVER=build/direct/bin/llama-server ./serve.sh long "$(./download.sh iq2)"
 ```
+
+A later change that also reads the router ids in place was faster in all four pairs: see [in-place router ids and slot map](ssd-inplace-io.md).

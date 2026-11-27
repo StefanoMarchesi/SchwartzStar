@@ -1,0 +1,148 @@
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index e95b5c3..115f4cf 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -31,6 +31,26 @@
+ 
+ namespace {
+ 
++static ggml_backend_buffer_t tensor_buffer(const ggml_tensor * t) {
++    return t->view_src ? t->view_src->buffer : t->buffer;
++}
++
++// a buffer that the CPU may read and write through the tensor data pointer. Metal reports is_host = false for
++// every buffer type, but its default allocation on Apple Silicon is shared (unified) memory.
++static bool buffer_cpu_visible(ggml_backend_buffer_t buffer) {
++    if (buffer == nullptr) {
++        return false;
++    }
++    if (ggml_backend_buffer_is_host(buffer)) {
++        return true;
++    }
++#if defined(__APPLE__) && defined(GGML_USE_METAL)
++    return ggml_backend_metal_buffer_is_shared(buffer);
++#else
++    return false;
++#endif
++}
++
+ // ClassLRU: one LRU list per frequency class, over the experts of a group of layers
+ // slot_map[il][e] is the slot of expert e of layer il, n_slots or later if not cached, the host slot map tensor
+ // CRF (combined recency and frequency) = uses of an expert, decayed with a half-life of N tokens, retained across evictions
+@@ -456,6 +476,10 @@ struct llama_moe_cache::impl {
+     // LLAMA_MOE_CACHE_TRACE: the selected experts of each slot lookup, for a simulator of the cache
+     FILE * trace = nullptr;
+ 
++    // LLAMA_MOE_CACHE_INPLACE_IO: read the router ids in place from shared device memory and write the slot map
++    // copy in place, instead of a blit read-back and a buffer upload (one command buffer each per layer and token)
++    bool inplace_io = false;
++
+     // slot maps in host memory
+     ggml_context_ptr ctx_host;
+     ggml_backend_buffer_ptr buf_host;
+@@ -487,6 +511,9 @@ struct llama_moe_cache::impl {
+         if (const char * v = getenv("LLAMA_MOE_CACHE_DEDUP"); v != nullptr && *v != '\0') {
+             dedup = std::clamp(atoi(v), 0, 2);
+         }
++        if (const char * v = getenv("LLAMA_MOE_CACHE_INPLACE_IO"); v != nullptr && *v != '\0') {
++            inplace_io = atoi(v) != 0;
++        }
+         if (stream) {
+             // Metal reports every buffer type as device memory, but on Apple Silicon its default
+             // allocation is shared with the CPU, which is what the pread writes into the banks need.
+@@ -503,6 +530,9 @@ struct llama_moe_cache::impl {
+             LLAMA_LOG_INFO("%s: Inkling SSD: %zu unique expert tensors, shared cache on %s, %s\n",
+                     __func__, stream->weights.size(), buft_name,
+                     llama_expert_page_cache_enabled() ? "pread with system page cache" : "pread/F_NOCACHE");
++            if (inplace_io) {
++                LLAMA_LOG_INFO("%s: LLAMA_MOE_CACHE_INPLACE_IO: router ids read and slot maps written in place\n", __func__);
++            }
+         }
+         if (dedup > 0 && this->cpu_share > 0.0f) {
+             // the CPU part writes per-plan zero slots into the slot map, which a shared slot map would carry to the next pass
+@@ -855,10 +885,10 @@ struct llama_moe_cache::impl {
+         }
+     }
+ 
+-    void write_trace(int32_t il, int32_t n_used) {
+-        const int32_t rec[3] = { il, n_used, (int32_t) ids.size() };
++    void write_trace(int32_t il, int32_t n_used, const int32_t * ids_data, int64_t n_ids) {
++        const int32_t rec[3] = { il, n_used, (int32_t) n_ids };
+         fwrite(rec, sizeof(int32_t), 3, trace);
+-        fwrite(ids.data(), sizeof(int32_t), ids.size(), trace);
++        fwrite(ids_data, sizeof(int32_t), n_ids, trace);
+     }
+ 
+     ~impl() {
+@@ -986,10 +1016,25 @@ struct llama_moe_cache::impl {
+         const int32_t n_used   = (int32_t) sel->src[0]->ne[0];
+         const int64_t n_tokens = sel->src[0]->ne[1];
+ 
+-        ids.resize(ggml_nelements(sel));
++        // LLAMA_MOE_CACHE_INPLACE_IO: the ids are computed GPU-side in an earlier split and the scheduler already
++        // waits for that split before this callback (ggml_backend_sched_copy_input: ggml_backend_synchronize on the
++        // backend, or a wait on the completion event of the previous split, is issued before the callback runs).
++        // Without a blit read-back the only wait left is the one that callback must do on the CPU, so read the ids
++        // through the tensor pointer when the CPU can see the buffer, instead of staging them to host memory.
++        const int64_t n_ids     = ggml_nelements(sel);
++        const bool    inplace_i = inplace_io && buffer_cpu_visible(tensor_buffer(sel)) && sel->data != nullptr;
++        const int32_t * ids_ptr = nullptr;
+         const auto sync_start = std::chrono::steady_clock::now();
+-        ggml_backend_tensor_get_async(backend, sel, ids.data(), 0, ggml_nbytes(sel));
+-        ggml_backend_synchronize(backend);
++        if (inplace_i) {
++            // no wait when the scheduler synchronized just above, otherwise the wait for the ids
++            ggml_backend_synchronize(backend);
++            ids_ptr = (const int32_t *) sel->data;
++        } else {
++            ids.resize(n_ids);
++            ggml_backend_tensor_get_async(backend, sel, ids.data(), 0, ggml_nbytes(sel));
++            ggml_backend_synchronize(backend);
++            ids_ptr = ids.data();
++        }
+         const double sync_ms = std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - sync_start).count();
+         if (stream) {
+@@ -997,7 +1042,7 @@ struct llama_moe_cache::impl {
+         }
+ 
+         if (trace != nullptr) {
+-            write_trace(il, n_used);
++            write_trace(il, n_used, ids_ptr, n_ids);
+         }
+ 
+         // part of the misses is computed on the CPU once the cache is full, the carry keeps the share right on average
+@@ -1008,7 +1053,7 @@ struct llama_moe_cache::impl {
+             return (size_t) (acc >> 16);
+         };
+         size_t n_hit = 0;
+-        if (!g.lru.plan(il, ids.data(), ids.size(), sel->src[0]->ne[1], n_used, n_zero, n_cpu, fills, cpu, n_hit)) {
++        if (!g.lru.plan(il, ids_ptr, n_ids, sel->src[0]->ne[1], n_used, n_zero, n_cpu, fills, cpu, n_hit)) {
+             GGML_ABORT("the MoE cache is too small for the experts selected in layer %d", il);
+         }
+         if (has_cpu) {
+@@ -1096,7 +1141,7 @@ struct llama_moe_cache::impl {
+             }
+         }
+ 
+-        stats & st = ids.size() <= (size_t) 8*n_expert_used ? stats_small : stats_large;
++        stats & st = (size_t) n_ids <= (size_t) 8*n_expert_used ? stats_small : stats_large;
+         st.hits   += n_hit;
+         st.misses += fills.size() + cpu.size();
+         st.cpu    += cpu.size();
+@@ -1107,7 +1152,14 @@ struct llama_moe_cache::impl {
+         // synchronizes before plan() changes it, so this upload has completed before the data changes)
+         // relies on ggml_backend_synchronize above (ids read-back) completing the previous slot map upload
+         // of the key layer before plan() changes its data; a pageable-memory H2D copy may also be staged at once
+-        ggml_backend_tensor_set_async(backend, dst, g.lru.slot_map[il], 0, ggml_nbytes(l.slot_map));
++        if (inplace_io && buffer_cpu_visible(tensor_buffer(dst)) && dst->data != nullptr) {
++            // LLAMA_MOE_CACHE_INPLACE_IO: the backend was synchronized above, so nothing on the GPU is reading this
++            // copy, and the split that reads it is encoded and committed after this callback returns. Write the slots
++            // through the pointer instead of staging them into a new Metal buffer and committing a blit for them.
++            memcpy(dst->data, g.lru.slot_map[il], ggml_nbytes(l.slot_map));
++        } else {
++            ggml_backend_tensor_set_async(backend, dst, g.lru.slot_map[il], 0, ggml_nbytes(l.slot_map));
++        }
+ 
+         return true;
+     }
