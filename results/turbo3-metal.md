@@ -2,9 +2,30 @@
 
 Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh` or any profile.
 
+## Update: turbo3 in banded attention
+
+27 November 2026. `patches-experimental/turbo3-banded.patch` applies on top of `turbo3-v-cache.patch` and lets banded flash attention run on Metal with `q4_0` keys and turbo3 values at head size 128. It changes the Metal support check and adds 29 test cases; the existing kernels already handled the turbo3 block. Cell positions and K/V row lists stay unsupported there.
+
+Checks, rebuilt separately from the author's build: FLASH_ATTN_EXT_BANDED 321 passed (29 with turbo3), FLASH_ATTN_EXT 5,428, SET_ROWS 174, TURBO_WHT 3, none failed. A verbose run showed that the patched build compiles the banded turbo3 kernels (`rel=1`, `kvpad=1`) and the dense build does not.
+
+At 7,895 prompt tokens it recalled 8/8 codes with the same 94 output tokens and text as the dense turbo3 build and as `f16` values. At 31,883 tokens (microbatch 512, 3,072 MiB expert cache, one run per setting, same document as the earlier 32K runs, which were measured in an earlier session):
+
+| V cache and attention | Codes | Peak process footprint, MiB | Prefill tok/s |
+| --- | --- | ---: | ---: |
+| turbo3, banded | 8/8 | 3,617 | 52.0 |
+| turbo3, dense | 8/8 | 4,001 | 52.7 |
+| `q4_0`, banded (the `long` profile) | 8/8 | 3,668 | 68.1 |
+| `f16`, banded | 8/8 | 4,124 | 75.1 |
+
+All four wrote the same text. Mean absolute log-probability difference from `f16` values was 0.016 for banded turbo3 and 0.018 for `q4_0`. A second document at 31,888 tokens also gave 8/8.
+
+So banded attention removes the extra peak memory of the dense turbo3 path (about 384 MiB here), and at 32K turbo3 uses about 50 MiB less than `q4_0` values. It did not make prompt processing faster: turbo3 stays about a quarter slower than `q4_0` there. The speeds are single runs. The Metal compute buffer reported at load was the same for the dense and banded builds, so it does not show this difference. Longer contexts were not tested.
+
+The patch was written with [Freebuff](https://freebuff.com/?ref=ref-b181061b-0b36-403c-9e01-a696e0b1b6fc&via=rewards_link) running DeepSeek V4.1 Flash, then reviewed and checked with the model with another AI assistant. Disclosure: I am not affiliated with Freebuff. That is my invite link, and Freebuff's programme may reward me if you use it; as far as I know this is only its points collection for merchandise, and the app also offers usage hours for invitations.
+
 ## What was ported
 
-`patches-experimental/turbo3-v-cache.patch` applies on top of the banded build sources (26 files). It adds the turbo3 type (400 bytes per 1,024 values), its CPU codec, the cache write path and the inverse rotation, plus Metal kernels for cache writes, the rotation and dense flash attention with `q4_0` keys and turbo3 values. Turbo3 keys, banded attention with turbo3 and other key types are not supported.
+`patches-experimental/turbo3-v-cache.patch` applies on top of the banded build sources (26 files). It adds the turbo3 type (400 bytes per 1,024 values), its CPU codec, the cache write path and the inverse rotation, plus Metal kernels for cache writes, the rotation and dense flash attention with `q4_0` keys and turbo3 values. Turbo3 keys and other key types are not supported. This first patch ran turbo3 only in dense attention; see the update above for banded attention.
 
 ## Checks
 
@@ -57,6 +78,7 @@ Build the banded variant first, then patch a copy of its sources. These commands
 INKLING_VARIANT=banded ./build.sh
 cp -R .llama.cpp-banded .llama.cpp-turbo3
 git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-v-cache.patch"
+git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-banded.patch"
 cmake -S .llama.cpp-turbo3 -B build/turbo3 -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
 cmake --build build/turbo3 --target llama-server --parallel 4
 ```

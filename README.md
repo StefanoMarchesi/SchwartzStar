@@ -75,7 +75,7 @@ It uses flash attention with `q4_0` keys and `q4_0` values, a 3,072 MiB expert c
 - [Where SSD streaming loses time](results/ssd-gap.md) against resident weights, with the experiments that did not help yet.
 - [Faster SSD decode by keeping the GPU busy](results/gpu-keepwarm.md), experimental and off by default. In longer runs with the built-in version, decode was 24% to 38% faster in four pairs (resident 14.9, SSD 6.2, SSD with it 8.2 tok/s), with identical output; an earlier short series with a separate helper gave 47% to 142%. The technique is not new: see [prior work](results/gpu-keepwarm.md#prior-work), including a case where it made an M1 Max much slower.
 - [Direct slot-map write for SSD streaming](results/direct-slot-map.md), an experimental opt-in patch: identical output, but no reliable speed gain. A longer series did not confirm the 12% to 30% first reported.
-- [Turbo3 value cache on Metal](results/turbo3-metal.md), an experimental patch: recall held up to 32K and the cache is smaller, but prompts are processed more slowly, so the `long` profile stays on `q4_0`. An [earlier short test](results/turbo3-first-signal.md) in another tree was corrected.
+- [Turbo3 value cache on Metal](results/turbo3-metal.md), experimental patches, now also in banded attention. At 32K, recall held and peak memory was about 50 MiB below `q4_0` values, but prompts were processed about a quarter more slowly, so the `long` profile stays on `q4_0`. An [earlier short test](results/turbo3-first-signal.md) in another tree was corrected.
 
 ## Measurements on a 16 GB M1 Pro
 
