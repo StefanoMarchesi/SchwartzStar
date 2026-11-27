@@ -20,7 +20,7 @@ Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh` or a
 Both wrote the same 92 tokens (mean absolute log-probability difference 0.017). Under load turbo3 saved about 190 MiB of peak footprint, close to the difference in the KV cache; the larger difference in the compute buffer reserved at load did not show up in the peak. The footprint leaves out file-mapped weights.
 
 - **Both completed a populated 128K prompt on 16 GB**, with little free memory left. Other large apps may not fit alongside.
-- **Turbo3 decoded at about half the speed** at this length. Decode uses dense attention with both formats; the cause was not isolated.
+- **Turbo3 decoded at about half the speed** at this length. Decode uses dense attention with both formats by default. A third run of turbo3 with an unpublished option that uses banded attention in decode too gave 2.96 tok/s (against 2.82), with the same 8/8 codes, the same text and the same peak footprint. So the attention variant does not explain the gap. A likely cause, not yet measured, is the cost of decoding turbo3 values: in decode, the full-context layers decode every cached value for each new token.
 - SSD reads were about 18% of prefill time.
 - These are single runs of a synthetic recall test. They say nothing about coding or agent work at 128K. Prefill was faster here than at 32K below; the reason is not known.
 
