@@ -1,6 +1,6 @@
 # Experimental patches
 
-`build.sh` does not apply these. See the linked report before using one.
+`build.sh` does not apply these. See the linked report before using one. `serve.sh` has opt-in switches, all off by default: `INKLING_GPU_KEEPALIVE=1` and `INKLING_INPLACE_IO=1` need a build with the matching patch and refuse to start otherwise; `INKLING_NGRAM=1` turns on llama.cpp's built-in `ngram-simple` ([report](../results/ngram-speculative.md); output is not guaranteed to be bit-identical).
 
 - `turbo3-v-cache.patch`: turbo3 value cache for the banded build. [Report](../results/turbo3-metal.md). The codec and the cache wiring are adapted from the TurboQuant llama.cpp fork [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) (MIT, llama.cpp and ggml authors), which follows the TurboQuant paper (arXiv 2504.19874). The port and the Metal kernels for `q4_0` keys with turbo3 values were written with AI assistance.
 - `gpu-keepalive.patch`: keeps the GPU busy while the backend is computing, to reduce the SSD-streaming decode slowdown. Banded build, off by default (`GGML_METAL_KEEPALIVE=20000`). Not a new technique. [Report](../results/gpu-keepwarm.md). Written with AI assistance.

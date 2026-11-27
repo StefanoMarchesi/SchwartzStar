@@ -37,6 +37,10 @@ checkpoints="${INKLING_CTX_CHECKPOINTS:-$checkpoint_default}"
 read_cache="${INKLING_SSD_READ_CACHE:-0}"
 reasoning_budget="${INKLING_REASONING_BUDGET:-$reasoning_default}"
 gpu=all
+# experimental, off by default; see patches-experimental/README.md
+gpu_keepalive="${INKLING_GPU_KEEPALIVE:-0}"
+inplace_io="${INKLING_INPLACE_IO:-0}"
+ngram="${INKLING_NGRAM:-0}"
 
 for number in "$ctx" "$batch" "$cache" "$port" "$threads" "$checkpoints"; do
     [[ "$number" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "Invalid numeric value: $number" >&2; exit 2; }
@@ -57,6 +61,12 @@ if [[ "$read_cache" != 0 && "$read_cache" != 1 ]]; then
     echo 'INKLING_SSD_READ_CACHE must be 0 or 1.' >&2
     exit 2
 fi
+for option in "$gpu_keepalive" "$inplace_io" "$ngram"; do
+    if [[ "$option" != 0 && "$option" != 1 ]]; then
+        echo 'INKLING_GPU_KEEPALIVE, INKLING_INPLACE_IO and INKLING_NGRAM must be 0 or 1.' >&2
+        exit 2
+    fi
+done
 if [[ ! "$reasoning_budget" =~ ^(0|[1-9][0-9]*)$ ]]; then
     echo 'INKLING_REASONING_BUDGET must be a non-negative number of tokens.' >&2
     exit 2
@@ -91,6 +101,25 @@ if [[ "$profile" != resident ]]; then
     fi
     export LLAMA_INKLING_SSD=1
     extra=(--inkling-ssd --split-mode none --cpu-moe --moe-cache-mib "$cache" --moe-cache-cpu-share 0)
+fi
+
+# an unpatched build would silently ignore these variables, so look for them in the binary and its libraries
+require_patch() {
+    if ! LC_ALL=C grep -q -a -- "$1" "$bin" "$(dirname "$bin")"/lib"$2"*.dylib 2>/dev/null; then
+        echo "This server build does not support $3: apply $4 and rebuild (see patches-experimental/README.md)." >&2
+        exit 1
+    fi
+}
+if [[ "$gpu_keepalive" == 1 ]]; then
+    require_patch GGML_METAL_KEEPALIVE ggml-metal INKLING_GPU_KEEPALIVE patches-experimental/gpu-keepalive.patch
+    export GGML_METAL_KEEPALIVE="${GGML_METAL_KEEPALIVE:-20000}"
+fi
+if [[ "$inplace_io" == 1 ]]; then
+    require_patch LLAMA_MOE_CACHE_INPLACE_IO llama INKLING_INPLACE_IO patches-experimental/ssd-inplace-io.patch
+    export LLAMA_MOE_CACHE_INPLACE_IO=1
+fi
+if [[ "$ngram" == 1 ]]; then
+    extra+=(--spec-type ngram-simple)
 fi
 
 exec "$bin" --model "$model" --alias inkling-2-mini --host 127.0.0.1 --port "$port" \
