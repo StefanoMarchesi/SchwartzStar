@@ -30,6 +30,10 @@ Inkling 2 has recurrent state, so the server saves a checkpoint, restores it aft
 
 So **output with drafting is not guaranteed to be bit-identical.** How tokens are grouped into batches is enough to explain the differences seen, and no restore error was observed. A small restore error hidden below that noise is not ruled out. The control also means that this quantized model on Metal can give a different greedy text just because the prompt was split differently.
 
+## A guided edit where it was slower
+
+In the [rerun of the guided PHP task](initial-tests-rerun.md#guided-two-turn-php-task-8k), `ngram-simple` accepted only about 15% of drafted tokens and each turn took longer than without it (46 to 47 s against 38 to 41 s for the first turn, 66 to 68 s against 52 to 53 s for the second, two runs each).
+
 ## Limits
 
 Two prompts, one context size, greedy only, not tested with long contexts, with the default non-banded build, or with a drafter model. Real coding work will usually repeat less than the code edit used here.
