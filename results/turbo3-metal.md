@@ -2,6 +2,34 @@
 
 Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh` or any profile.
 
+## Update: 128K, turbo3 against `q4_0` values
+
+27 November 2026. One run each of the same document (129,987 prompt tokens, 8 planted codes), 131,072 context, microbatch 512, K `q4_0`, banded attention in prompt processing, 3,072 MiB expert cache, 16 GB M1 Pro. The build had all the patches below, plus unpublished decode options that were left off.
+
+| | turbo3 V | `q4_0` V |
+| --- | ---: | ---: |
+| Codes recalled | 8/8 | 8/8 |
+| Prefill tok/s (time) | 74.4 (29 min 8 s) | 74.3 (29 min 11 s) |
+| Decode tok/s, 92 tokens | 2.82 | 5.42 |
+| Peak process footprint, MiB | 4,574 | 4,766 |
+| Metal KV cache / compute buffer at load, MiB | 1,033 / 2,996 | 1,220 / 3,523 |
+| Swap growth, sampled every 15 s | none | 86 MiB |
+| Lowest free memory reported by macOS | 14% | 11% |
+| SSD reads in prefill | 314 s, 1,402 GiB | 324 s, 1,388 GiB |
+
+Both wrote the same 92 tokens (mean absolute log-probability difference 0.017). Under load turbo3 saved about 190 MiB of peak footprint, close to the difference in the KV cache; the larger difference in the compute buffer reserved at load did not show up in the peak. The footprint leaves out file-mapped weights.
+
+- **Both completed a populated 128K prompt on 16 GB**, with little free memory left. Other large apps may not fit alongside.
+- **Turbo3 decoded at about half the speed** at this length. Decode uses dense attention with both formats; the cause was not isolated.
+- SSD reads were about 18% of prefill time.
+- These are single runs of a synthetic recall test. They say nothing about coding or agent work at 128K. Prefill was faster here than at 32K below; the reason is not known.
+
+## Update: faster turbo3 prompt processing
+
+`patches-experimental/turbo3-prefill.patch` applies after the two patches below. In prompt processing it converts the cached keys and values to `f16` once per attention call instead of inside every small query tile. It also applies to other quantized pairs in banded attention, including `q4_0`/`q4_0`. `GGML_METAL_FA_KV_F16=0` restores the earlier paths.
+
+On the sources with all three patches, FLASH_ATTN_EXT_BANDED 321, FLASH_ATTN_EXT 5,428, SET_ROWS 174 and TURBO_WHT 3 passed with the switch at 1 and at 0. At 31,883 tokens, on the same document as the table below, turbo3 prefill rose from **52.0 to 65.2 tok/s** (one run each; `q4_0` had measured 68.1 earlier). Peak footprint stayed at 3,617 MiB, and the 92 output tokens and log-probabilities were identical to the run before the change. At 7,895 tokens, turbo3 and `q4_0` outputs were also identical before and after. The speed figure comes from one pair of runs. The patch was written with Freebuff, see the disclosure below.
+
 ## Update: turbo3 in banded attention
 
 27 November 2026. `patches-experimental/turbo3-banded.patch` applies on top of `turbo3-v-cache.patch` and lets banded flash attention run on Metal with `q4_0` keys and turbo3 values at head size 128. It changes the Metal support check and adds 29 test cases; the existing kernels already handled the turbo3 block. Cell positions and K/V row lists stay unsupported there.
@@ -19,7 +47,7 @@ At 7,895 prompt tokens it recalled 8/8 codes with the same 94 output tokens and 
 
 All four wrote the same text. Mean absolute log-probability difference from `f16` values was 0.016 for banded turbo3 and 0.018 for `q4_0`. A second document at 31,888 tokens also gave 8/8.
 
-So banded attention removes the extra peak memory of the dense turbo3 path (about 384 MiB here), and at 32K turbo3 uses about 50 MiB less than `q4_0` values. It did not make prompt processing faster: turbo3 stays about a quarter slower than `q4_0` there. The speeds are single runs. The Metal compute buffer reported at load was the same for the dense and banded builds, so it does not show this difference. Longer contexts were not tested.
+So banded attention removes the extra peak memory of the dense turbo3 path (about 384 MiB here), and at 32K turbo3 uses about 50 MiB less than `q4_0` values. By itself it did not make prompt processing faster: turbo3 was about a quarter slower than `q4_0` there until the prefill update above. The speeds are single runs. The Metal compute buffer reported at load was the same for the dense and banded builds, so it does not show this difference. This section stops at 32K; see the 128K update above.
 
 The patch was written with [Freebuff](https://freebuff.com/?ref=ref-b181061b-0b36-403c-9e01-a696e0b1b6fc&via=rewards_link) running DeepSeek V4.1 Flash, then reviewed and checked with the model with another AI assistant. Disclosure: I am not affiliated with Freebuff. That is my invite link, and Freebuff's programme may reward me if you use it; as far as I know this is only its points collection for merchandise, and the app also offers usage hours for invitations.
 
@@ -79,6 +107,7 @@ INKLING_VARIANT=banded ./build.sh
 cp -R .llama.cpp-banded .llama.cpp-turbo3
 git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-v-cache.patch"
 git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-banded.patch"
+git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-prefill.patch"
 cmake -S .llama.cpp-turbo3 -B build/turbo3 -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
 cmake --build build/turbo3 --target llama-server --parallel 4
 ```

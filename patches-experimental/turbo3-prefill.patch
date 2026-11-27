@@ -1,0 +1,205 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index 1235b1c..8711b35 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -1873,12 +1873,10 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_p
+ 
+ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_kv_f16(
+         ggml_metal_library_t lib,
+-        const ggml_tensor * op) {
+-    assert(op->op == GGML_OP_FLASH_ATTN_EXT || op->op == GGML_OP_FLASH_ATTN_EXT_BANDED);
+-
++        ggml_type type) {
+     char base[256];
+ 
+-    snprintf(base, 256, "kernel_flash_attn_ext_kv_%s_f16", ggml_type_name(op->src[1]->type));
++    snprintf(base, 256, "kernel_flash_attn_ext_kv_%s_f16", ggml_type_name(type));
+ 
+     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, base);
+     if (!res.pipeline) {
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index 5bed5f9..2514247 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -193,7 +193,7 @@ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_att
+ 
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_kv_f16(
+         ggml_metal_library_t lib,
+-        const struct ggml_tensor * op);
++        enum ggml_type type);
+ 
+ struct ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_flash_attn_ext_blk(
+         ggml_metal_library_t lib,
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 41c6672..0d9f033 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -14,6 +14,7 @@
+ #include <algorithm>
+ #include <limits>
+ #include <cmath>
++#include <cstdlib>
+ 
+ // threadgroups needed to fill the GPU
+ // TODO: dedup
+@@ -3244,36 +3245,61 @@ bool ggml_metal_op_flash_attn_ext_use_vec(const ggml_tensor * op) {
+     return (ne01 < 20) && (ne00 % 32 == 0);
+ }
+ 
++// the F16 dequant pass has one kernel instantiation per source type, so K and V may differ
++// (a turbo3 V cache with a q4_0 K is the case the outline kernel is used for)
++static bool ggml_metal_op_flash_attn_ext_kv_f16_supported(ggml_type type) {
++    switch (type) {
++        case GGML_TYPE_Q4_0:
++        case GGML_TYPE_Q4_1:
++        case GGML_TYPE_Q5_0:
++        case GGML_TYPE_Q5_1:
++        case GGML_TYPE_Q8_0:
++        case GGML_TYPE_TURBO3_0:
++            return true;
++        default:
++            return false;
++    }
++}
++
++// GGML_METAL_FA_KV_F16=0 restores the behaviour before commit 5f36145: the banded op and every mixed K/V pair
++// dequantize inline, so the F16 K/V copy (2 x n_kv x n_head_kv x head_size x 2 bytes, 1 GiB at 256K) stays out
++// of the compute buffer. Read once: the buffer reservation (ggml_backend_metal_buffer_type_get_alloc_size) and
++// the graph encoding both call use_kv_f16(), and they must agree.
++static bool ggml_metal_op_flash_attn_ext_kv_f16_enabled() {
++    static const bool enabled = []() {
++        const char * env = std::getenv("GGML_METAL_FA_KV_F16");
++        return env == nullptr || env[0] == '\0' || std::atoi(env) != 0;
++    }();
++
++    return enabled;
++}
++
+ // ref: https://github.com/ggml-org/llama.cpp/pull/27390
+ // dequantize the quantized KV cache to F16 before running the F16 flash attention kernels
+ static bool ggml_metal_op_flash_attn_ext_use_kv_f16(const ggml_tensor * op) {
+     assert(op->op == GGML_OP_FLASH_ATTN_EXT || op->op == GGML_OP_FLASH_ATTN_EXT_BANDED);
+ 
+-    // depending on compute/bandwidth ratio, dequant to f16 kv is not always beneficial
+-    // ref: https://github.com/ggml-org/llama.cpp/pull/27390#issuecomment-5355152767
+-    // banded: the kernels dequantize the KV inline, an F16 copy of the whole cache would grow with n_kv
+-    // mixed K/V types: dequantized inline too (the F16 pass converts K and V with one kernel type)
+-    if (op->op == GGML_OP_FLASH_ATTN_EXT_BANDED || op->src[1]->type != op->src[2]->type) {
++    // banded and mixed K/V types dequantize inline, as they did before the turbo3 V prefill pass; keep that when
++    // the pass is disabled, which is what keeps the F16 copy out of the reservation as well
++    if (!ggml_metal_op_flash_attn_ext_kv_f16_enabled() &&
++        (op->op == GGML_OP_FLASH_ATTN_EXT_BANDED || op->src[1]->type != op->src[2]->type)) {
+         return false;
+     }
+ 
++    // depending on compute/bandwidth ratio, dequant to f16 kv is not always beneficial
++    // ref: https://github.com/ggml-org/llama.cpp/pull/27390#issuecomment-5355152767
++    // few queries (decode): the kernels dequantize the KV inline, an F16 copy of the whole cache would grow
++    // with n_kv and the copy would not be amortized by the queries of one call
+     // TODO: tune per device
+     // large heads need the upfront dequant to fit the non-vec threadgroup memory
+     if (op->src[0]->ne[1] < 32 &&
+-        (op->src[0]->ne[0] < 512 || ggml_metal_op_flash_attn_ext_use_vec(op))) {
++        (op->src[0]->ne[0] < 512 || ggml_metal_op_flash_attn_ext_use_vec(op) ||
++         op->op == GGML_OP_FLASH_ATTN_EXT_BANDED)) {
+         return false;
+     }
+ 
+-    switch (op->src[1]->type) {
+-        case GGML_TYPE_Q4_0:
+-        case GGML_TYPE_Q4_1:
+-        case GGML_TYPE_Q5_0:
+-        case GGML_TYPE_Q5_1:
+-        case GGML_TYPE_Q8_0:
+-            return true;
+-        default:
+-            return false;
+-    }
++    return ggml_metal_op_flash_attn_ext_kv_f16_supported(op->src[1]->type) &&
++           ggml_metal_op_flash_attn_ext_kv_f16_supported(op->src[2]->type);
+ }
+ 
+ static bool ggml_metal_op_flash_attn_ext_use_tensor(const ggml_tensor * op, bool has_tensor) {
+@@ -3637,8 +3663,8 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+     GGML_ASSERT(ne00 % 4 == 0);
+ 
+     GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32);
+-    // mixed K/V types are dequantized inline only (no F16 pass)
+-    GGML_ASSERT(op->src[1]->type == op->src[2]->type || !ggml_metal_op_flash_attn_ext_use_kv_f16(op));
++    // mixed K/V types get one dequant pipeline per source, they are never a shared view
++    GGML_ASSERT(op->src[1]->type == op->src[2]->type || !ggml_metal_op_flash_attn_ext_v_is_view_of_k(op));
+ 
+     //GGML_ASSERT(ggml_are_same_shape (src1, src2));
+     GGML_ASSERT(ne11 == ne21);
+@@ -3781,8 +3807,9 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+         ggml_metal_buffer_id bid_v_f16 = bid_kv_f16;
+         bid_v_f16.offs += ggml_metal_op_flash_attn_ext_kv_f16_k_size(op);
+ 
+-        auto pipeline0 = ggml_metal_library_get_pipeline_flash_attn_ext_kv_f16(lib, op);
+-        const int nth = std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline0), 256);
++        auto pipeline_k = ggml_metal_library_get_pipeline_flash_attn_ext_kv_f16(lib, op->src[1]->type);
++        auto pipeline_v = ggml_metal_library_get_pipeline_flash_attn_ext_kv_f16(lib, op->src[2]->type);
++        const int nth = std::min(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline_k), 256);
+ 
+         // K
+         ggml_metal_kargs_flash_attn_ext_kv_f16 args_k = {
+@@ -3797,7 +3824,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+             /*.nblocks =*/ nblocks1,
+         };
+ 
+-        ggml_metal_encoder_set_pipeline(enc, pipeline0);
++        ggml_metal_encoder_set_pipeline(enc, pipeline_k);
+         ggml_metal_encoder_set_bytes   (enc, &args_k, sizeof(args_k), 0);
+         ggml_metal_encoder_set_buffer  (enc, bid_src1,        1);
+         ggml_metal_encoder_set_buffer  (enc, bid_kv_f16, 2);
+@@ -3822,7 +3849,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+                 /*.nblocks =*/ nblocks2,
+             };
+ 
+-            ggml_metal_encoder_set_pipeline(enc, pipeline0);
++            ggml_metal_encoder_set_pipeline(enc, pipeline_v);
+             ggml_metal_encoder_set_bytes   (enc, &args_v, sizeof(args_v), 0);
+             ggml_metal_encoder_set_buffer  (enc, bid_src2,        1);
+             ggml_metal_encoder_set_buffer  (enc, bid_v_f16,       2);
+diff --git a/ggml/src/ggml-metal/kernels/fa_aux.metal b/ggml/src/ggml-metal/kernels/fa_aux.metal
+index 7205b1e..b4d7e9f 100644
+--- a/ggml/src/ggml-metal/kernels/fa_aux.metal
++++ b/ggml/src/ggml-metal/kernels/fa_aux.metal
+@@ -47,6 +47,8 @@ template [[host_name("kernel_flash_attn_ext_kv_q4_1_f16")]] kernel kernel_flash_
+ template [[host_name("kernel_flash_attn_ext_kv_q5_0_f16")]] kernel kernel_flash_attn_ext_kv_f16_t kernel_flash_attn_ext_kv_f16<block_q5_0, 32, dequantize_q5_0>;
+ template [[host_name("kernel_flash_attn_ext_kv_q5_1_f16")]] kernel kernel_flash_attn_ext_kv_f16_t kernel_flash_attn_ext_kv_f16<block_q5_1, 32, dequantize_q5_1>;
+ template [[host_name("kernel_flash_attn_ext_kv_q8_0_f16")]] kernel kernel_flash_attn_ext_kv_f16_t kernel_flash_attn_ext_kv_f16<block_q8_0, 32, dequantize_q8_0>;
++// turbo3 V caches at prefill: the dequantized values are the ones the inline V dequantization produces
++template [[host_name("kernel_flash_attn_ext_kv_turbo3_f16")]] kernel kernel_flash_attn_ext_kv_f16_t kernel_flash_attn_ext_kv_f16<block_turbo3_0, QK_TURBO3, dequantize_turbo3_0<float4x4>>;
+ 
+ // gather the K/V cache rows referenced by the kv_rows lists into contiguous F16 buffers
+ // - one threadgroup per (row, stream); the attention is then run as a standard dense op over the
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 5a50849..dc80eae 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -14912,6 +14912,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
+         }
+     }
+ 
++    // turbo3 V at prefill: K = q4_0, head 128, a 512-token microbatch over a 4k and a 32k cache, banded and
++    // dense, against f16 and q4_0 V. The 32k cases are the shape the reviewer measured on the model.
++    for (int64_t kv : { 4096, 32768 }) {
++        for (ggml_type v_type : { GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_TURBO3_0 }) {
++            test_cases.emplace_back(new test_flash_attn_ext_banded(128, 24, 8, 512, kv, 1024, 3, GGML_TYPE_Q4_0, GGML_TYPE_F32, false, v_type));
++            test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {3, 1}, kv, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, v_type));
++        }
++    }
++
++    // the V cache write at prefill: 512 rows x 8 heads of 128 values into a 32k cache
++    for (ggml_type dst_type : { GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_TURBO3_0 }) {
++        test_cases.emplace_back(new test_set_rows(GGML_TYPE_F32, dst_type, GGML_TYPE_I64, { 128, 32768, 8, 1 }, { 1, 1 }, 512, false));
++    }
++
++    // the inverse WHT that turbo3 V needs on the attention output at prefill
++    test_cases.emplace_back(new test_turbo_wht(1, { 128, 512, 24, 1 }));
++    test_cases.emplace_back(new test_turbo_wht(1, { 128, 512, 8, 1 }));
++
+     test_cases.emplace_back(new test_timestep_embedding());
+     test_cases.emplace_back(new test_timestep_embedding(GGML_TYPE_F32, {32769, 1, 1, 1}, 4096, 10000));
+     test_cases.emplace_back(new test_timestep_embedding(GGML_TYPE_F32, {65, 1, 1, 1}, 1, 10000));
