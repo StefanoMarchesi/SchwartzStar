@@ -22,10 +22,29 @@ Eight servers in the order off, on, on, off, on, off, off, on. About 1,900 promp
 | 4 | 5.44 | 5.50 | +1% | 57.6 / 69.5 |
 | Mean of 4 servers | 5.70 | 7.61 | | 65.8 / 73.5 |
 
-- Decode was faster with the option in all four pairs, with a median of +39%. **The size of the gain is uncertain:** it ranged from 1% to 58%.
+- Decode was faster with the option in all four pairs, with a median of +39%. **The size of the gain was uncertain in this series:** it ranged from 1% to 58%. See the [replication](#replication-with-resident-weights-in-the-same-series).
 - The machine was in use, and speeds varied a lot between runs with the same setting (4.8 to 7.1 tok/s off, 5.5 to 9.1 on). Prompt processing also moved from run to run, which suggests part of the spread comes from the machine.
 - All eight runs produced the same 512 tokens and log-probabilities.
 - Across all servers the ranges overlap: the slowest run with the option (5.50) was below the fastest without it (7.09). Only the adjacent pairs all favour it.
+
+## Replication, with resident weights in the same series
+
+Later the same day, with a binary built from the published patches only (banded sources, keep-alive and this patch). Same prompt and settings as above, 512 greedy tokens, one server per run. R is resident weights, S is SSD streaming with the keep-alive, I is S with this option. The order R S I I S R R S I I S R and the rule for claiming an ordering (all four pairs agree, identical output) were fixed before the run. Runs with the same number form a pair, although they were not always back to back.
+
+| Pair | R, tok/s | S, tok/s | I, tok/s | I against S | R against I |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 8.98 | 6.96\* | 8.54 | +23% | 1.05x |
+| 2 | 11.25 | 6.21 | 7.86 | +27% | 1.43x |
+| 3 | 10.53 | 6.73\* | 8.62 | +28% | 1.22x |
+| 4 | 14.10 | 7.09 | 8.81 | +24% | 1.60x |
+| Mean decode | 11.21 | 6.75 | 8.46 | | 1.33x |
+| Mean prompt processing | 98 | 63 | 64 | | |
+
+- Decode was faster with the option in all four pairs, by 23% to 28% (median 26%). This is a much narrower range than in the first series.
+- All 12 runs produced the same 512 tokens and log-probabilities, and so did the discarded attempts.
+- Resident weights were faster than both streaming settings in all four pairs. **How much faster is not settled:** resident decode ranged from 9.0 to 14.1 tok/s, while each streaming setting stayed within about 1 tok/s. The cause was not investigated. Swap grew by 1.0 to 3.1 GB during each resident run, so memory pressure is one possible explanation.
+- The machine was in use. A run was repeated, at most twice, if another process went above 150% CPU. The last attempts of the two runs marked \* were still disturbed; the two pairs without a mark give +27% and +24%. With discarded attempts included, every run with the option (7.84 to 8.81) was still faster than every streaming run without it (5.99 to 7.09). The filter did not watch other GPU use.
+- Power was not measured reliably, so nothing is claimed about energy.
 
 ## Correctness
 
