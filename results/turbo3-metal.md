@@ -18,6 +18,7 @@ Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh` or a
 | SSD reads in prefill | 1,312 s (20% of prefill), 4,557 GiB |
 | Expert cache hit rate in prefill / decode | 42.5% / 90.2% |
 
+- Prompt processing slowed along the prompt: about 50 tok/s up to 32K, 44 tok/s between 65K and 131K and 32 tok/s over the last 64K. Part of the slowdown may come from the memory pressure; the causes were not separated.
 - **It completed, but not comfortably.** Swap grew heavily and free memory was very low. The run stopped short of the 6 GB swap-growth limit set to abort it.
 - The machine was busy during part of this run: other AI agents, a 648 MB download, desktop apps, and an external disk that disconnected (the test files were on the internal drive). Speeds are not a clean measurement.
 - Reads per prompt token were about 17.9 MiB here against 11.0 MiB at 128K with microbatch 512. Fewer tokens share each selected expert in a smaller microbatch, and the context is longer; the two effects were not separated.
