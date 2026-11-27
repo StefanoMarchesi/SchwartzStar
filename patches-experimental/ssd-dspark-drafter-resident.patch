@@ -1,0 +1,12 @@
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -2175,7 +2175,8 @@
+     load_prec_policy(ml);
+ 
+     std::shared_ptr<llama_expert_stream> stream;
+-    if (llama_expert_stream_enabled() && !ml.no_alloc) {
++    // a DFlash/DSpark drafter is loaded next to the streamed model: it stays resident (no routed experts to stream)
++    if (llama_expert_stream_enabled() && !ml.no_alloc && arch != LLM_ARCH_DFLASH) {
+ #if !defined(__APPLE__) || !defined(__aarch64__)
+         throw std::runtime_error("Inkling SSD requires Apple Silicon");
+ #endif
