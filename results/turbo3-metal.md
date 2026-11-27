@@ -2,6 +2,19 @@
 
 Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh` or any profile.
 
+## Update: faster turbo3 decode
+
+27 November 2026. A synthetic test showed one attention call with a single query over 131K cached positions taking 22.6 ms with turbo3 values against 4.9 ms with `q4_0`. `patches-experimental/turbo3-decode.patch`, applied after the three patches below, decodes turbo3 values without the table lookup (branchless selects) and gives the `q4_0`/turbo3 pair the same decode kernel tiling as `q4_0`. In the reviewer's own build the synthetic call fell to 5.7 ms (`q4_0` 4.8 ms). No extra memory is reserved. All the Metal tests listed below passed with the prefill switch at 1 and at 0. The first change keeps the same arithmetic; the new tiling changes the order of additions, so results can differ in the last bits.
+
+| Model run | turbo3 decode before | turbo3 decode with the patch | `q4_0` decode |
+| --- | ---: | ---: | ---: |
+| 7,895 prompt tokens | 4.22 tok/s | 7.03 tok/s | 8.09 tok/s (same session) |
+| 129,987 prompt tokens | 2.82 tok/s | **4.71 tok/s** | 5.42 tok/s (earlier run) |
+
+Both turbo3 runs with the patch recalled 8/8 codes and wrote the same text as before, with the same tokens. At 128K the peak footprint stayed at 4,573 MiB, about 190 MiB below `q4_0`, with no swap growth, and prompt processing was 74.5 tok/s. Mean log-probability differences from the earlier turbo3 runs were 0.004 at 8K and 0.012 at 128K (largest single difference 1.02). One run per row and about 90 decoded tokens each, so the exact speeds are uncertain. The patch was written with Freebuff, see the disclosure below.
+
+So at 128K turbo3 now decodes at about 87% of the `q4_0` speed in these runs, processes prompts at the same speed and uses about 190 MiB less.
+
 ## Update: 128K, turbo3 against `q4_0` values
 
 27 November 2026. One run each of the same document (129,987 prompt tokens, 8 planted codes), 131,072 context, microbatch 512, K `q4_0`, banded attention in prompt processing, 3,072 MiB expert cache, 16 GB M1 Pro. The build had all the patches below, plus unpublished decode options that were left off.
@@ -20,7 +33,7 @@ Apple M1 Pro, 16 GB, 26 November 2026. Experimental: not part of `build.sh` or a
 Both wrote the same 92 tokens (mean absolute log-probability difference 0.017). Under load turbo3 saved about 190 MiB of peak footprint, close to the difference in the KV cache; the larger difference in the compute buffer reserved at load did not show up in the peak. The footprint leaves out file-mapped weights.
 
 - **Both completed a populated 128K prompt on 16 GB**, with little free memory left. Other large apps may not fit alongside.
-- **Turbo3 decoded at about half the speed** at this length. Decode uses dense attention with both formats by default. A third run of turbo3 with an unpublished option that uses banded attention in decode too gave 2.96 tok/s (against 2.82), with the same 8/8 codes, the same text and the same peak footprint. So the attention variant does not explain the gap. A likely cause, not yet measured, is the cost of decoding turbo3 values: in decode, the full-context layers decode every cached value for each new token.
+- **Turbo3 decoded at about half the speed** at this length. Decode uses dense attention with both formats by default. A third run of turbo3 with an unpublished option that uses banded attention in decode too gave 2.96 tok/s (against 2.82), with the same 8/8 codes, the same text and the same peak footprint. So the attention variant does not explain the gap. The cause was later traced to decoding turbo3 values, see the update above.
 - SSD reads were about 18% of prefill time.
 - These are single runs of a synthetic recall test. They say nothing about coding or agent work at 128K. Prefill was faster here than at 32K below; the reason is not known.
 
@@ -108,6 +121,7 @@ cp -R .llama.cpp-banded .llama.cpp-turbo3
 git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-v-cache.patch"
 git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-banded.patch"
 git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-prefill.patch"
+git -C .llama.cpp-turbo3 apply "$PWD/patches-experimental/turbo3-decode.patch"
 cmake -S .llama.cpp-turbo3 -B build/turbo3 -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
 cmake --build build/turbo3 --target llama-server --parallel 4
 ```

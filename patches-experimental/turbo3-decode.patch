@@ -1,0 +1,122 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 0d9f033..adb6673 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -4253,13 +4253,28 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
+         // half4x4 kernel
+         // sparse: the index lists are per query row, so a threadgroup can share KV with Q == 1 only
+         // mixed K/V types: only the baseline vec configuration is instantiated
+-        auto cfg = use_sparse || op->src[1]->type != op->src[2]->type
+-                ? ggml_metal_tuning::fa_vec_baseline_cfg((int) ne00, (int) ne20)
+-                : ggml_metal_tuning::fa_vec_pick(
++        // the mixed q4_0/turbo3 vec kernels carry the same ne variants as the single-type q4_0 ones, so that pair may
++        // take the tuned tiling at one query per threadgroup; every other mixed pair only has the baseline
++        const bool mixed_tuned = !use_sparse && op->src[1]->type == GGML_TYPE_Q4_0 &&
++            op->src[2]->type == GGML_TYPE_TURBO3_0 && ne00 == 128 && ne20 == 128;
++
++        auto cfg = mixed_tuned
++                ? ggml_metal_tuning::fa_vec_cfg_t { 1, ggml_metal_tuning::fa_vec_pick(
+                           props_dev->gpu_family,
+-                          (int) op->src[1]->type,
+-                          (int) ne00, (int) ne20,   // dk, dv (ne00 == dk for FA)
+-                          ne11, ne01);
++                          GGML_TYPE_Q4_0,
++                          (int) ne00, (int) ne20,
++                          ne11, ne01).NE }
++                : (use_sparse || op->src[1]->type != op->src[2]->type
++                        ? ggml_metal_tuning::fa_vec_baseline_cfg((int) ne00, (int) ne20)
++                        : ggml_metal_tuning::fa_vec_pick(
++                                  props_dev->gpu_family,
++                                  (int) op->src[1]->type,
++                                  (int) ne00, (int) ne20,   // dk, dv (ne00 == dk for FA)
++                                  ne11, ne01));
++
++        if (mixed_tuned && cfg.NE != 1 && cfg.NE != 2 && cfg.NE != 4) {
++            cfg.NE = 1; // only these three mixed instantiations exist
++        }
+ 
+         int nqptg = cfg.Q; // queries per threadgroup
+ 
+diff --git a/ggml/src/ggml-metal/kernels/dequantize.h b/ggml/src/ggml-metal/kernels/dequantize.h
+index e9d6585..144a201 100644
+--- a/ggml/src/ggml-metal/kernels/dequantize.h
++++ b/ggml/src/ggml-metal/kernels/dequantize.h
+@@ -72,14 +72,34 @@ void dequantize_turbo3_0(device const block_turbo3_0 * xb, short il, thread type
+ }
+ 
+ // il in [0, 32): 4 values, elements il*4 .. il*4+3 of the block
++// with a single query the centroid index is data dependent and diverges per lane, and a gather from the constant
++// array serializes there, so the 8 centroids are selected branchlessly from immediates instead
++// the centroids are symmetric: the 2 low bits index four magnitudes from the largest down, and the sign bit picks
++// +mag[3 - code] or -mag[code], so one 4-way mux and one sign select suffice
++static inline float turbo3_centroid_select(int code, bool sign) {
++    const int t = sign ? 3 - code : code;
++
++    const bool b0 = (t & 1) != 0;
++    const bool b1 = (t & 2) != 0;
++
++    const float m01 = select(0.190207f, 0.118786f, b0);
++    const float m23 = select(0.066822f, 0.021663f, b0);
++    const float m   = select(m01, m23, b1);
++
++    return sign ? m : -m;
++}
++
+ template <typename type4>
+ void dequantize_turbo3_0_t4(device const block_turbo3_0 * xb, short il, thread type4 & reg) {
+     const float norm = (float) xb->norm;
+ 
++    const uint8_t qs = xb->qs[il];
++    const uint8_t si = xb->signs[il/2];
++
+     for (short k = 0; k < 4; ++k) {
+-        const short j = il*4 + k;
+-        const short idx = ((xb->qs[j/4] >> ((j%4)*2)) & 3) | (((xb->signs[j/8] >> (j%8)) & 1) << 2);
+-        reg[k] = turbo3_centroids[idx] * norm;
++        const int  code = (qs >> (2*k)) & 3;
++        const bool sign = ((si >> ((il%2)*4 + k)) & 1) != 0;
++        reg[k] = turbo3_centroid_select(code, sign) * norm;
+     }
+ }
+ 
+diff --git a/ggml/src/ggml-metal/kernels/fa_vec_q4_0.metal b/ggml/src/ggml-metal/kernels/fa_vec_q4_0.metal
+index fc3a422..0692a61 100644
+--- a/ggml/src/ggml-metal/kernels/fa_vec_q4_0.metal
++++ b/ggml/src/ggml-metal/kernels/fa_vec_q4_0.metal
+@@ -95,8 +95,11 @@ template [[host_name("kernel_flash_attn_ext_vec_q4_0_f16_dk64_dv64")]] kernel fl
+ template [[host_name("kernel_flash_attn_ext_vec_q4_0_f16_dk128_dv128")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q4_0, 8, dequantize_q4_0_t4, half4, 1, dequantize_f16_t4, 128, 128, 1>;
+ template [[host_name("kernel_flash_attn_ext_vec_q4_0_q8_0_dk64_dv64")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q4_0, 8, dequantize_q4_0_t4, block_q8_0, 8, dequantize_q8_0_t4, 64, 64, 2>;
+ template [[host_name("kernel_flash_attn_ext_vec_q4_0_q8_0_dk128_dv128")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q4_0, 8, dequantize_q4_0_t4, block_q8_0, 8, dequantize_q8_0_t4, 128, 128, 1>;
+-// K = q4_0, V = turbo3 (rotated domain), head size 128; the mixed pair uses the baseline vec config
+-template [[host_name("kernel_flash_attn_ext_vec_q4_0_turbo3_dk128_dv128")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q4_0, 8, dequantize_q4_0_t4, block_turbo3_0, NL_TURBO3_VEC, dequantize_turbo3_0_t4, 128, 128, 1>;
++// K = q4_0, V = turbo3 (rotated domain), head size 128; the mixed pair uses the baseline vec config, plus the ne
++// variants of the tuned table (one query per threadgroup), which is what q4_0 gets at decode
++template [[host_name("kernel_flash_attn_ext_vec_q4_0_turbo3_dk128_dv128")]]        kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q4_0, 8, dequantize_q4_0_t4, block_turbo3_0, NL_TURBO3_VEC, dequantize_turbo3_0_t4, 128, 128, 1>;
++template [[host_name("kernel_flash_attn_ext_vec_q4_0_turbo3_dk128_dv128_q1_ne2")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q4_0, 8, dequantize_q4_0_t4, block_turbo3_0, NL_TURBO3_VEC, dequantize_turbo3_0_t4, 128, 128, 2, 1>;
++template [[host_name("kernel_flash_attn_ext_vec_q4_0_turbo3_dk128_dv128_q1_ne4")]] kernel flash_attn_ext_vec_t kernel_flash_attn_ext_vec<FA_TYPES, block_q4_0, 8, dequantize_q4_0_t4, block_turbo3_0, NL_TURBO3_VEC, dequantize_turbo3_0_t4, 128, 128, 4, 1>;
+ 
+ #undef FA_TYPES
+ #undef FA_TYPES_F32
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index dc80eae..474be82 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -14921,6 +14921,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
+         }
+     }
+ 
++    // TASK4: turbo3 V at decode. One, two and eight queries over a 32k and a 131k cache, Inkling geometry (24
++    // heads, 8 KV heads, head 128), K = q4_0, V = f16 / q4_0 / turbo3, banded over a padded n_kv and dense. The
++    // 131k cases are the shape the reviewer measured on the model (129,987 prompt tokens).
++    for (int64_t kv : { 32768, 131072 }) {
++        for (ggml_type v_type : { GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_TURBO3_0 }) {
++            for (int64_t n_q : { 1, 2, 8 }) {
++                test_cases.emplace_back(new test_flash_attn_ext_banded(128, 24, 8, n_q, kv, 1024, 3, GGML_TYPE_Q4_0, GGML_TYPE_F32, false, v_type));
++                test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {3, 1}, kv, n_q, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, v_type));
++            }
++        }
++    }
++
+     // the V cache write at prefill: 512 rows x 8 heads of 128 values into a 32k cache
+     for (ggml_type dst_type : { GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_TURBO3_0 }) {
+         test_cases.emplace_back(new test_set_rows(GGML_TYPE_F32, dst_type, GGML_TYPE_I64, { 128, 32768, 8, 1 }, { 1, 1 }, 512, false));
