@@ -4,7 +4,7 @@ Apple M1 Pro, 16 GB, 27 November 2026. Experimental, off by default, not part of
 
 ## Prior work
 
-This is not new. `LLAMA_MOE_CACHE_DIRECT_IDS` in [Alex Schiltmans's per-layer expert streaming](https://github.com/alexschiltmans/llama.cpp-per-layer-experts/blob/per-layer-experts/docs/moe-ssd-streaming.md) reads the router ids from shared memory and writes the slot map in place, and also drops the second wait. The patch here keeps a synchronize call before the read.
+This is not new. `LLAMA_MOE_CACHE_DIRECT_IDS` in [Alex Schiltmans's per-layer expert streaming](https://github.com/alexschiltmans/llama.cpp-per-layer-experts/blob/per-layer-experts/docs/moe-ssd-streaming.md) reads the router ids from shared memory and writes the slot map in place, and also drops the second wait. The patch here keeps a synchronize call before the read. In the series below that call cost almost nothing, because the scheduler had already waited: the expert cache's decode sync timer totalled 5.5 to 11.8 ms over each 513-token decode with the option on, against 8.9 to 17.9 s with it off. Removing the call would not make a measurable difference here, and it stays as a safeguard in case the scheduler stops waiting before the callback.
 
 ## Change
 
